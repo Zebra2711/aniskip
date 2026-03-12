@@ -1,0 +1,67 @@
+{
+  "phim/mashle-i12-a4905/tap-06-91291.html": [
+    {
+      "type": "op",
+      "start": 16,
+      "end": 106
+    },
+    {
+      "type": "ed",
+      "start": 1324,
+      "end": 1420.125578
+    }
+  ],
+  "phim/mashle-i12-a4905/tap-07-91564.html": [
+    {
+      "type": "op",
+      "start": 24,
+      "end": 114
+    },
+    {
+      "type": "ed",
+      "start": 1324,
+      "end": 1420.0426270000007
+    }
+  ],
+  "phim/oshi-no-ko-3rd-season-a5467/tap-01-111168.html": [
+    {
+      "type": "op",
+      "start": 331,
+      "end": 430
+    },
+    {
+      "type": "ed",
+      "start": 1335,
+      "end": 1430.011028999999
+    }
+  ],
+  "phim/thanh-guom-diet-quy-lang-tho-ren-i2-a4466/tap-01-89774.html": [
+    {
+      "type": "op",
+      "start": 0,
+      "end": 15
+    },
+    {
+      "type": "op",
+      "start": 2658,
+      "end": 2899
+    },
+    {
+      "type": "preview",
+      "start": 2899,
+      "end": 2965.257867
+    }
+  ],
+  "phim/oshi-no-ko-3rd-season-a5467/tap-03-111432.html": [
+    {
+      "type": "op",
+      "start": 0,
+      "end": 90
+    },
+    {
+      "type": "ed",
+      "start": 1435,
+      "end": 1529.944385999999
+    }
+  ]
+}
