@@ -231,10 +231,11 @@
       h = Math.imul(h ^ s.type.charCodeAt(0), 2654435761) ^ (s.start * 1000 | 0) ^ (s.end * 1000 | 0);
     }
     const sig = h + "|" + segs.length;
-    if (sig === _tlSig && tlContainer) return;
+    if (sig === _tlSig && tlContainer && document.contains(tlContainer)) return;
     _tlSig = sig;
 
-    if (!tlContainer) {
+    if (!tlContainer || !document.contains(tlContainer)) {
+      tlContainer = null;
       const container = document.querySelector(".jw-timesegment-container");
       if (!container) return;
       tlContainer = document.createElement("div");
@@ -245,6 +246,7 @@
       });
       container.appendChild(tlContainer);
     }
+
     tlContainer.innerHTML = "";
     for (const seg of segs) {
       const bar = document.createElement("div");
