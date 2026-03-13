@@ -149,8 +149,10 @@
   const SKIP_COOL = 3000;
   let lastSkip = -Infinity;
   let tlContainer = null;
+  let updateHdrStats = () => {};
   let autoplay = GM_getValue("autoplay", false);
   let _cachedJwp = null;
+  let _cachedDur = 0;
   function getJwp() {
     if (_cachedJwp) return _cachedJwp;
     if (window.jwplayer && typeof window.jwplayer === "function") {
@@ -168,7 +170,7 @@
   }
 
   function initEngine(jwp, videoEl) {
-    function onMeta() { refreshTimeline(loadSegs(), liveDur()); }
+    function onMeta() { _cachedDur = liveDur(); refreshTimeline(loadSegs(), _cachedDur); updateHdrStats();}
     if (jwp) {
       jwp.on("meta", onMeta);
       jwp.on("firstFrame", () => { tlContainer = null; _tlSig = ""; onMeta(); });
@@ -253,11 +255,28 @@
       cursor: "move",
     });
     const hdrTitle = document.createElement("span");
-    hdrTitle.textContent = "Anime Skip";
+    hdrTitle.textContent = "AniSkip";
+    const hdrStats = document.createElement("span");
+    Object.assign(hdrStats.style, { display: "flex", alignItems: "center", gap: "5px", flex: "1", justifyContent: "flex-end", marginRight: "6px" });
+    const hdrDur = document.createElement("span");
+    Object.assign(hdrDur.style, { color: "#06d6a0", fontWeight: "bold", fontSize: "12px" });
+    const hdrSaved = document.createElement("span");
+    Object.assign(hdrSaved.style, { color: "#e63946", fontWeight: "bold", fontSize: "12px" });
+    hdrStats.append(hdrDur, hdrSaved);
+
+    updateHdrStats = function () {
+      const dur = _cachedDur;
+      const segs = loadSegs();
+      const saved = segs.reduce((acc, s) => acc + (s.end - s.start), 0);
+      hdrDur.textContent = dur > 0 ? fmt(dur - saved) : "";
+      hdrSaved.textContent = saved > 0 ? "+ " + fmt(saved) : "";
+    };
+
     const collapseBtn = document.createElement("span");
     collapseBtn.textContent = "+";
     Object.assign(collapseBtn.style, { cursor: "pointer", padding: "0 4px", fontSize: "14px" });
-    hdr.append(hdrTitle, collapseBtn);
+
+    hdr.append(hdrTitle, hdrStats, collapseBtn);
 
     const body = document.createElement("div");
     body.style.padding = "6px";
@@ -824,8 +843,9 @@
     buildWidget();
 
     setInterval(() => {
-      const dur = liveDur();
-      if (dur > 0) refreshTimeline(loadSegs(), dur);
+      if (!_cachedDur) _cachedDur = liveDur();
+      if (_cachedDur > 0) refreshTimeline(loadSegs(), _cachedDur);
+      updateHdrStats();
     }, 100);
 
     let _mergedCache = null;
@@ -885,7 +905,7 @@
         liveSeekTo(hit.end);
         showToast("Skipped " + hit.labels.join(" + "));
       }
-    }, 200);
+    }, 300);
 
     detectPlayer((jwp, videoEl) => {
       initEngine(jwp, videoEl);
