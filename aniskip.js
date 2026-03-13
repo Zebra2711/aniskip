@@ -16,8 +16,21 @@
 (function () {
   "use strict";
 
+  /* ─── Style helpers ─── */
+  function css(el, props) { Object.assign(el.style, props); return el; }
+  const S = {
+    input:   { background: "#0f3460", color: "#e0e0e0", border: "none", borderRadius: "4px",
+               fontSize: "13px", fontWeight: "bold" },
+    btn:     { background: "#0f3460", color: "#e0e0e0", border: "1px solid #2a2a4a", borderRadius: "4px",
+               cursor: "pointer", fontWeight: "bold", fontSize: "13px", marginBottom: "0",
+               height: "30px", padding: "0 10px",
+               display: "flex", alignItems: "center", justifyContent: "center" },
+    label:   { color: "#adb5bd", fontSize: "12px", fontWeight: "bold", marginBottom: "4px" },
+    divider: { borderTop: "1px solid #2a2a4a", marginBottom: "6px" },
+  };
+
   /* ─── Storage ─── */
-  let _storeKey = null; // cached, was computed every call
+  let _storeKey = null;
   function storeKey() {
     return _storeKey || (_storeKey = location.pathname.replace(/^\//, ""));
   }
@@ -31,9 +44,7 @@
       return defaults;
     }
   }
-  function saveSkipTypes(st) {
-    GM_setValue("skip_types", JSON.stringify(st));
-  }
+  function saveSkipTypes(st) { GM_setValue("skip_types", JSON.stringify(st)); }
   let skipTypes = {};
 
   let _segsCache = null;
@@ -51,6 +62,7 @@
     invalidateMergedCache();
     GM_setValue(_segsCacheKey, JSON.stringify(s));
   }
+
   function fmt(s) {
     s = s < 0 ? 0 : s | 0;
     const hh = (s / 3600) | 0;
@@ -60,6 +72,7 @@
     if (hh > 0) return hh + ":" + (mm > 9 ? mm : "0" + mm) + ":" + (ss > 9 ? ss : "0" + ss);
     return mm + ":" + (ss > 9 ? ss : "0" + ss);
   }
+
   function parseFmt(str) {
     str = String(str).trim();
     const dotIdx = str.lastIndexOf(".");
@@ -97,26 +110,22 @@
   }
 
   function attachAutoFormat(inp) {
-    inp.addEventListener("input", () => {
-      inp.value = inp.value.replace(/[^\d:.]/g, "").slice(0, 12);
-    });
+    inp.addEventListener("input", () => { inp.value = inp.value.replace(/[^\d:.]/g, "").slice(0, 12); inp._raw = undefined; });
     inp.addEventListener("paste", (e) => {
       e.preventDefault();
       const text = (e.clipboardData || window.clipboardData).getData("text");
       inp.value = text.replace(/[^\d:.]/g, "").slice(0, 12);
     });
-    inp.addEventListener("blur", () => {
-      if (inp.value) inp.value = autoFmt(inp.value);
-    });
+    inp.addEventListener("blur", () => { if (inp.value) inp.value = autoFmt(inp.value); });
   }
 
   const TYPES = {
-    op:      { label: "OP",     color: "#00b4d8" },
-    ed:      { label: "ED",     color: "#f77f00" },
-    recap:   { label: "Recap",  color: "#9b5de5" },
-    preview: { label: "Preview",color: "#06d6a0" },
-    filler:  { label: "Filler", color: "#adb5bd" },
-    ad:      { label: "Ad",     color: "#e63946" },
+    op:      { label: "OP",      color: "#00b4d8" },
+    ed:      { label: "ED",      color: "#f77f00" },
+    recap:   { label: "Recap",   color: "#9b5de5" },
+    preview: { label: "Preview", color: "#06d6a0" },
+    filler:  { label: "Filler",  color: "#adb5bd" },
+    ad:      { label: "Ad",      color: "#e63946" },
   };
 
   function liveGetPos() {
@@ -126,12 +135,26 @@
     return v ? (v.currentTime || 0) : null;
   }
 
-  function liveSeekTo(t) {
+  function liveSeekTo(t, play = true) {
     t = t < 0 ? 0 : (t || 0);
     const p = getJwp();
-    if (p && typeof p.seek === "function") { p.seek(t); if (typeof p.play === "function") p.play(); return true; }
+    if (p && typeof p.seek === "function") {
+      const wasPaused = typeof p.getState === "function" && p.getState() === "paused";
+      if (typeof p.play === "function") p.play();
+      setTimeout(() => {
+        p.seek(t);
+        if (!play && wasPaused && typeof p.pause === "function") setTimeout(() => p.pause(), 0);
+      }, 0);
+      return true;
+    }
     const v = document.querySelector("#media-player video, video");
-    if (v) { v.currentTime = t; if (v.paused) v.play().catch(() => {}); return true; }
+    if (v) {
+      const wasPaused = v.paused;
+      v.currentTime = t;
+      if (play && wasPaused) v.play().catch(() => {});
+      else if (!play && !wasPaused) v.pause();
+      return true;
+    }
     return false;
   }
 
@@ -162,10 +185,16 @@
   let tlContainer = null;
   let updateHdrStats = () => {};
   let autoplay = GM_getValue("autoplay", false);
+  let lockSeg = GM_getValue("lock_seg", false);
   let _cachedJwp = null;
   let _cachedDur = 0;
   let _mergedCache = null;
+  let editIndex = null;
+  let inStart = null;
+  let inEnd = null;
+
   function invalidateMergedCache() { _mergedCache = null; }
+
   function getJwp() {
     if (_cachedJwp) return _cachedJwp;
     if (window.jwplayer && typeof window.jwplayer === "function") {
@@ -176,6 +205,7 @@
   }
 
   function liveDur() {
+    if (_cachedDur) return _cachedDur;
     const p = getJwp();
     if (p && typeof p.getDuration === "function") return p.getDuration() || 0;
     const v = document.querySelector("#media-player video, video");
@@ -183,7 +213,7 @@
   }
 
   function initEngine(jwp, videoEl) {
-    function onMeta() { _cachedDur = liveDur(); refreshTimeline(loadSegs(), _cachedDur); updateHdrStats();}
+    function onMeta() { _cachedDur = liveDur(); refreshTimeline(loadSegs(), _cachedDur); updateHdrStats(); }
     if (jwp) {
       jwp.on("meta", onMeta);
       jwp.on("firstFrame", () => { tlContainer = null; _tlSig = ""; onMeta(); });
@@ -191,6 +221,7 @@
     }
     if (videoEl) videoEl.addEventListener("loadedmetadata", () => { tlContainer = null; onMeta(); });
   }
+
   let _tlSig = "";
   function refreshTimeline(segs, dur) {
     if (!dur) return;
@@ -207,7 +238,7 @@
       const container = document.querySelector(".jw-timesegment-container");
       if (!container) return;
       tlContainer = document.createElement("div");
-      Object.assign(tlContainer.style, {
+      css(tlContainer, {
         position: "absolute", top: "0", left: "0",
         width: "100%", height: "100%",
         pointerEvents: "none", zIndex: "5",
@@ -217,7 +248,7 @@
     tlContainer.innerHTML = "";
     for (const seg of segs) {
       const bar = document.createElement("div");
-      Object.assign(bar.style, {
+      css(bar, {
         position: "absolute", top: "0",
         left: (seg.start / dur * 100) + "%",
         width: Math.max(0.3, (seg.end - seg.start) / dur * 100) + "%",
@@ -235,7 +266,7 @@
     const t = document.createElement("div");
     t.id = "avs-toast";
     t.textContent = msg;
-    Object.assign(t.style, {
+    css(t, {
       position: "fixed", bottom: "160px", right: "16px",
       background: "#00b4d8", color: "#fff",
       padding: "7px 14px", borderRadius: "6px",
@@ -254,40 +285,45 @@
 
     const wrap = document.createElement("div");
     wrap.id = "avs-widget";
-    Object.assign(wrap.style, {
-      position: "fixed", zIndex: "2147483647", width: "220px", background: "#1a1a2e", borderRadius: "8px",
-      boxShadow: "0 3px 14px rgba(0,0,0,0.6)", fontFamily: "sans-serif", fontSize: "13px", overflow: "hidden",
-      userSelect: "none", top: "10px", right: "10px", left: "auto", bottom: "auto",
+    css(wrap, {
+      position: "fixed", zIndex: "2147483647", width: "220px",
+      background: "#1a1a2e", borderRadius: "8px",
+      boxShadow: "0 3px 14px rgba(0,0,0,0.6)", fontFamily: "sans-serif",
+      fontSize: "13px", overflow: "hidden", userSelect: "none",
+      top: "10px", right: "10px", left: "auto", bottom: "auto",
     });
 
     const hdr = document.createElement("div");
-    Object.assign(hdr.style, {
+    css(hdr, {
       background: "#16213e", color: "#e0e0e0",
       padding: "6px 8px", fontWeight: "bold", fontSize: "13px",
       display: "flex", justifyContent: "space-between", alignItems: "center",
       cursor: "move",
     });
+
     const hdrTitle = document.createElement("span");
     hdrTitle.textContent = "AniSkip";
+
     const hdrStats = document.createElement("span");
-    Object.assign(hdrStats.style, { display: "flex", alignItems: "center", gap: "5px", flex: "1", justifyContent: "flex-end", marginRight: "6px" });
-    const hdrDur = document.createElement("span");
-    Object.assign(hdrDur.style, { color: "#06d6a0", fontWeight: "bold", fontSize: "12px" });
+    css(hdrStats, { display: "flex", alignItems: "center", gap: "5px", flex: "1", justifyContent: "flex-end", marginRight: "6px" });
+
+    const hdrDur   = document.createElement("span");
     const hdrSaved = document.createElement("span");
-    Object.assign(hdrSaved.style, { color: "#e63946", fontWeight: "bold", fontSize: "12px" });
+    css(hdrDur,   { color: "#06d6a0", fontWeight: "bold", fontSize: "12px" });
+    css(hdrSaved, { color: "#e63946", fontWeight: "bold", fontSize: "12px" });
     hdrStats.append(hdrDur, hdrSaved);
 
     updateHdrStats = function () {
-      const dur = _cachedDur;
+      const dur  = _cachedDur;
       const segs = loadSegs();
       const saved = segs.reduce((acc, s) => acc + (s.end - s.start), 0);
-      hdrDur.textContent = dur > 0 ? fmt(dur - saved) : "";
+      hdrDur.textContent   = dur > 0   ? fmt(dur - saved) : "";
       hdrSaved.textContent = saved > 0 ? "+ " + fmt(saved) : "";
     };
 
     const collapseBtn = document.createElement("span");
     collapseBtn.textContent = "+";
-    Object.assign(collapseBtn.style, { cursor: "pointer", padding: "0 4px", fontSize: "14px" });
+    css(collapseBtn, { cursor: "pointer", padding: "0 4px", fontSize: "14px" });
 
     hdr.append(hdrTitle, hdrStats, collapseBtn);
 
@@ -295,22 +331,21 @@
     body.style.padding = "6px";
     body.style.display = "none";
 
-    /* Quick Jump */
+    /* ── Quick Jump ── */
     const quickRow = document.createElement("div");
-    Object.assign(quickRow.style, { display: "flex", gap: "4px", alignItems: "center", marginBottom: "6px", height: "30px" });
+    css(quickRow, { display: "flex", gap: "4px", alignItems: "center", marginBottom: "6px", height: "30px" });
+
     const timeInput = document.createElement("input");
     timeInput.type = "text"; timeInput.placeholder = "MM:SS";
-    Object.assign(timeInput.style, {
-      flex: "1", padding: "4px 6px", border: "none", borderRadius: "4px", marginBottom: "0", height: "30px",
-      background: "#0f3460", color: "#e0e0e0", fontSize: "13px", outline: "none", fontWeight: "bold",
-    });
+    css(timeInput, { ...S.input, flex: "1", padding: "4px 6px", height: "30px", marginBottom: "0", outline: "none" });
+
     const jumpBtn = document.createElement("button");
     jumpBtn.textContent = "Jump";
-    Object.assign(jumpBtn.style, {
-      height: "30px", justifyContent: "center", alignItems: "center",
-      padding: "0px 8px", background: "#00b4d8", color: "#fff",
-      border: "none", borderRadius: "4px", cursor: "pointer", display: "flex",
+    css(jumpBtn, {
+      height: "30px", padding: "0px 8px", background: "#00b4d8", color: "#fff",
+      border: "none", borderRadius: "4px", cursor: "pointer",
       fontWeight: "bold", fontSize: "13px", marginBottom: "0",
+      display: "flex", justifyContent: "center", alignItems: "center",
     });
     jumpBtn.onclick = () => {
       let t;
@@ -328,19 +363,103 @@
     quickRow.append(timeInput, jumpBtn);
     body.appendChild(quickRow);
 
+    /* ── Nudge row 1: [<] [time] [>] ── */
+    const nudgeRow1 = document.createElement("div");
+    css(nudgeRow1, { display: "flex", gap: "4px", alignItems: "center", marginBottom: "2px", height: "30px" });
+
+    const nudgeCurr = document.createElement("span");
+    nudgeCurr.textContent = "0:00.000";
+    css(nudgeCurr, {
+      flex: "1", textAlign: "center", color: "#06d6a0", cursor: "pointer",
+      fontSize: "13px", fontWeight: "bold", fontFamily: "monospace", marginBottom: "0",
+    });
+    nudgeCurr.onclick = () => {
+      const p = getJwp();
+      const v = document.querySelector("#media-player video, video");
+      const paused = v ? v.paused : false;
+      if (paused) {
+        if (p && typeof p.play  === "function") p.play();  else if (v) v.play().catch(() => {});
+      } else {
+        if (p && typeof p.pause === "function") p.pause(); else if (v) v.pause();
+      }
+    };
+    let collapsed = true;
+    setInterval(() => {
+      if (collapsed) return;
+      const pos = liveGetPos();
+      const v = document.querySelector("#media-player video, video");
+      nudgeCurr.style.color = (v && !v.paused) ? "#06d6a0" : "#e63946";
+      if (pos === null) return;
+      const ms = String(Math.round((pos % 1) * 1000)).padStart(3, "0");
+      nudgeCurr.textContent = fmt(pos) + "." + ms;
+    }, 80);
+
+    /* ── Nudge row 2: step [-] [val] [+] [ms|s] ── */
+    const nudgeRow2 = document.createElement("div");
+    css(nudgeRow2, { display: "flex", gap: "4px", alignItems: "center", height: "30px" });
+
+    let nudgeUnit = "s";
+    const nudgeVal = document.createElement("input");
+    nudgeVal.type = "number"; nudgeVal.value = "90"; nudgeVal.min = "1"; nudgeVal.id = "avs-nudge-val";
+    css(nudgeVal, { ...S.input, flex: "1", textAlign: "center", padding: "4px", height: "30px", outline: "none", marginBottom: "0" });
+    nudgeVal.style.MozAppearance = "textfield";
+
+    const spinStyle = document.createElement("style");
+    spinStyle.textContent = "#avs-nudge-val::-webkit-outer-spin-button,#avs-nudge-val::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}";
+    document.head.appendChild(spinStyle);
+
+    const nudgeUnitBtn = document.createElement("button");
+    nudgeUnitBtn.textContent = "s";
+    css(nudgeUnitBtn, { ...S.btn, padding: "0", color: "#00b4d8", width: "36px", minWidth: "36px", textAlign: "center" });
+    nudgeUnitBtn.onclick = () => { nudgeUnit = nudgeUnit === "ms" ? "s" : "ms"; nudgeUnitBtn.textContent = nudgeUnit; };
+
+    const mkSeekBtn = (label, dir) => {
+      const btn = document.createElement("button");
+      btn.textContent = label;
+      css(btn, S.btn);
+      btn.onclick = () => {
+        const pos = liveGetPos();
+        if (pos === null) { showToast("Player not found"); return; }
+        const v = document.querySelector("#media-player video, video");
+        const wasPaused = v ? v.paused : false;
+        const delta = parseFloat(nudgeVal.value || 5) * (nudgeUnit === "ms" ? 0.001 : 1) * dir;
+        liveSeekTo(pos + delta, !wasPaused);
+      };
+      return btn;
+    };
+
+    const mkStepBtn = (label, dir) => {
+      const btn = document.createElement("button");
+      btn.textContent = label;
+      css(btn, S.btn);
+      btn.onclick = () => { nudgeVal.value = Math.max(1, parseFloat(nudgeVal.value || 1) + dir); };
+      return btn;
+    };
+
+    const jumpStartBtn = document.createElement("button");
+    jumpStartBtn.textContent = "i<";
+    css(jumpStartBtn, S.btn);
+    jumpStartBtn.onclick = () => { liveSeekTo(0, false); };
+    nudgeRow2.append(jumpStartBtn, mkStepBtn("-", -1), nudgeVal, mkStepBtn("+", 1), nudgeUnitBtn);
+    nudgeRow1.append(mkSeekBtn("<", -1), nudgeCurr, mkSeekBtn(">", 1));
+    body.appendChild(nudgeRow1);
+    body.appendChild(nudgeRow2);
+
     const div1 = document.createElement("div");
-    Object.assign(div1.style, { borderTop: "1px solid #2a2a4a", marginBottom: "6px" });
+    css(div1, S.divider);
     body.appendChild(div1);
 
+    /* ── Save segment ── */
     const saveLabel = document.createElement("div");
     saveLabel.textContent = "Save segment";
-    Object.assign(saveLabel.style, { color: "#adb5bd", fontSize: "12px", marginBottom: "4px", fontWeight: "bold" });
+    css(saveLabel, S.label);
     body.appendChild(saveLabel);
 
     const typeSelect = document.createElement("select");
-    Object.assign(typeSelect.style, {
+    css(typeSelect, {
       width: "100%", marginBottom: "4px", padding: "3px", height: "30px",
-      background: "#0f3460", color: "#e0e0e0", border: "none", borderRadius: "4px", fontSize: "13px", fontWeight: "bold",
+      background: "#0f3460", color: "#e0e0e0", border: "none", borderRadius: "4px",
+      fontSize: "13px", fontWeight: "bold",
     });
     for (const [k, v] of Object.entries(TYPES)) {
       const o = document.createElement("option"); o.value = k; o.textContent = v.label;
@@ -350,21 +469,19 @@
 
     function timeRow(placeholder) {
       const row = document.createElement("div");
-      Object.assign(row.style, { display: "flex", gap: "3px", marginBottom: "4px" });
+      css(row, { display: "flex", gap: "3px", marginBottom: "4px" });
+
       const inp = document.createElement("input");
       inp.type = "text"; inp.placeholder = placeholder;
-      Object.assign(inp.style, {
-        flex: "1", padding: "3px 5px", background: "#0f3460", color: "#e0e0e0", marginBottom: "0",
-        border: "none", borderRadius: "4px", fontSize: "13px", fontWeight: "bold", height: "30px",
-      });
+      css(inp, { ...S.input, flex: "1", padding: "3px 5px", height: "30px", marginBottom: "0" });
+
       const nowBtn = document.createElement("button");
       nowBtn.textContent = "Now";
-      Object.assign(nowBtn.style, {
-        justifyContent: "center", alignItems: "center", display: "flex",
-        padding: "2px 6px", background: "#0f3460", color: "#adb5bd", marginBottom: "0", height: "30px",
-        border: "1px solid #2a2a4a", borderRadius: "4px", cursor: "pointer", fontSize: "12px", fontWeight: "bold",
-      });
+      css(nowBtn, { ...S.btn, padding: "2px 6px", color: "#adb5bd", fontSize: "12px" });
       nowBtn.onclick = () => {
+        const p = getJwp();
+        if (p && typeof p.pause === "function") p.pause();
+        else { const v = document.querySelector("#media-player video, video"); if (v) v.pause(); }
         const pos = liveGetPos();
         if (pos !== null) {
           const ms = Math.round((pos % 1) * 1000);
@@ -372,89 +489,180 @@
           inp._raw = pos;
         } else showToast("Player not found");
       };
-      row.append(inp, nowBtn);
+
+      const undoBtn = document.createElement("button");
+      undoBtn.textContent = "U";
+      css(undoBtn, { ...S.btn, padding: "2px 6px", background: "#f77f00", color: "#fff", border: "none", fontSize: "12px" });
+      undoBtn.onclick = () => {
+        if (inp._undoVal !== undefined) { inp.value = inp._undoVal; inp._raw = inp._undoRaw; }
+        else { inp.value = ""; inp._raw = undefined; }
+      };
+
+      row.append(inp, nowBtn, undoBtn);
       return { row, inp };
     }
 
-    const { row: startRow, inp: inStart } = timeRow("Start");
-    const { row: endRow,   inp: inEnd   } = timeRow("End");
+    const { row: startRow, inp: _inStart } = timeRow("Start");
+    const { row: endRow,   inp: _inEnd   } = timeRow("End");
+    inStart = _inStart;
+    inEnd   = _inEnd;
     attachAutoFormat(inStart);
     attachAutoFormat(inEnd);
     body.append(startRow, endRow);
 
+    const saveBtnRow = document.createElement("div");
+    css(saveBtnRow, { display: "flex", gap: "4px", marginBottom: "6px" });
+
     const saveBtn = document.createElement("button");
     saveBtn.textContent = "Save Segment";
-    Object.assign(saveBtn.style, {
-      width: "100%", padding: "5px", background: "#06d6a0", color: "#fff",
+    css(saveBtn, {
+      flex: "1", padding: "5px", background: "#06d6a0", color: "#fff",
       border: "none", borderRadius: "4px", cursor: "pointer",
-      fontWeight: "bold", fontSize: "13px", marginBottom: "6px",
+      fontWeight: "bold", fontSize: "13px",
     });
+
+    const jumpBeginBtn = document.createElement("button");
+    jumpBeginBtn.textContent = "B";
+    css(jumpBeginBtn, {
+      padding: "5px 8px", background: "#0f3460", color: "#e0e0e0",
+      border: "none", borderRadius: "4px", cursor: "pointer",
+      fontWeight: "bold", fontSize: "13px", display: "none",
+    });
+    jumpBeginBtn.onclick = () => {
+      const t = inStart._raw ?? (inStart.value.trim() ? parseFmt(inStart.value) : null);
+      if (t !== null && !isNaN(t)) liveSeekTo(t, false); else showToast("Invalid start time");
+    };
+
+    const jumpEndBtn = document.createElement("button");
+    jumpEndBtn.textContent = "E";
+    css(jumpEndBtn, {
+      padding: "5px 8px", background: "#0f3460", color: "#e0e0e0",
+      border: "none", borderRadius: "4px", cursor: "pointer",
+      fontWeight: "bold", fontSize: "13px", display: "none",
+    });
+    jumpEndBtn.onclick = () => {
+      const t = inEnd._raw ?? (inEnd.value.trim() ? parseFmt(inEnd.value) : null);
+      if (t !== null && !isNaN(t)) liveSeekTo(t, false); else showToast("Invalid end time");
+    };
+
+    const discardBtn = document.createElement("button");
+    discardBtn.textContent = "Discard";
+    css(discardBtn, {
+      padding: "5px 10px", background: "#f77f00", color: "#fff",
+      border: "none", borderRadius: "4px", cursor: "pointer",
+      fontWeight: "bold", fontSize: "13px", display: "none",
+    });
+
+    function resetForm() {
+      editIndex = null;
+      inStart.value = ""; inEnd.value = "";
+      inStart._raw = undefined; inEnd._raw = undefined;
+      inStart._undoVal = undefined; inEnd._undoVal = undefined;
+      typeSelect.value = "op";
+      saveBtn.textContent = "Save Segment";
+      discardBtn.style.display = "none";
+      jumpBeginBtn.style.display = "none";
+      jumpEndBtn.style.display = "none";
+    }
+
+    function startEditSegment(i) {
+      const seg = loadSegs()[i];
+      if (!seg) return;
+      editIndex = i;
+      liveSeekTo(seg.start, false);
+      typeSelect.value = seg.type;
+      const msS = Math.round((seg.start % 1) * 1000);
+      inStart.value = fmt(seg.start) + (msS > 0 ? "." + String(msS).padStart(3, "0") : "");
+      inStart._raw = seg.start; inStart._undoVal = inStart.value; inStart._undoRaw = seg.start;
+      const msE = Math.round((seg.end % 1) * 1000);
+      inEnd.value = fmt(seg.end) + (msE > 0 ? "." + String(msE).padStart(3, "0") : "");
+      inEnd._raw = seg.end; inEnd._undoVal = inEnd.value; inEnd._undoRaw = seg.end;
+      saveBtn.textContent = "Update";
+      discardBtn.style.display = "";
+      jumpBeginBtn.style.display = "";
+      jumpEndBtn.style.display = "";
+      body.scrollTop = 0;
+      renderList();
+    }
+
     saveBtn.onclick = () => {
-      const s = inStart._raw ?? (inStart.value.trim() ? parseFmt(inStart.value) : 0);
-      const rawE = inEnd._raw ?? (inEnd.value.trim() ? parseFmt(inEnd.value) : null);
-      const e = (!rawE || rawE <= 0) ? (_cachedDur || liveDur()) : rawE;
+      const s    = inStart._raw ?? (inStart.value.trim() ? parseFmt(inStart.value) : 0);
+      const rawE = inEnd._raw   ?? (inEnd.value.trim()   ? parseFmt(inEnd.value)   : null);
+      const e    = (!rawE || rawE <= 0) ? (_cachedDur || liveDur()) : rawE;
       if (isNaN(s) || isNaN(e) || e <= 0 || e <= s) { showToast("Check start / end times"); return; }
       const segs = loadSegs();
-      segs.push({ type: typeSelect.value, start: s, end: e });
+      if (editIndex !== null) {
+        segs[editIndex] = { type: typeSelect.value, start: s, end: e };
+        showToast("Segment updated");
+      } else {
+        segs.push({ type: typeSelect.value, start: s, end: e });
+        showToast("Segment saved");
+      }
       saveSegs(segs);
-      inStart.value = ""; inEnd.value = "";
+      resetForm();
       refreshTimeline(loadSegs(), liveDur());
       renderList();
-      showToast("Segment saved");
     };
-    body.appendChild(saveBtn);
 
+    discardBtn.onclick = () => { resetForm(); renderList(); };
+    saveBtnRow.append(saveBtn, jumpBeginBtn, jumpEndBtn, discardBtn);
+    body.appendChild(saveBtnRow);
+
+    /* ── Auto-skip types ── */
     const typesLabel = document.createElement("div");
-    typesLabel.textContent = "Auto-skip these:";
-    Object.assign(typesLabel.style, { color: "#adb5bd", fontSize: "12px", marginBottom: "4px", fontWeight: "bold" });
+    typesLabel.textContent = "Auto-skip:";
+    css(typesLabel, S.label);
     body.appendChild(typesLabel);
 
     const typesFlex = document.createElement("div");
-    Object.assign(typesFlex.style, { display: "flex", flexWrap: "wrap", gap: "8px", marginBottom: "6px" });
+    css(typesFlex, { display: "flex", flexWrap: "wrap", gap: "8px", marginBottom: "6px" });
     for (const [k, v] of Object.entries(TYPES)) {
       const lblWrap = document.createElement("label");
-      Object.assign(lblWrap.style, {
-        display: "flex", alignItems: "center", gap: "3px",
-        cursor: "pointer", fontSize: "13px", color: "#e0e0e0", fontWeight: "bold"
-      });
+      css(lblWrap, { display: "flex", alignItems: "center", gap: "3px", cursor: "pointer", fontSize: "13px", color: "#e0e0e0", fontWeight: "bold" });
       const chk = document.createElement("input");
-      chk.type = "checkbox";
-      chk.checked = !!skipTypes[k];
-      Object.assign(chk.style, { margin: "0", accentColor: v.color });
+      chk.type = "checkbox"; chk.checked = !!skipTypes[k];
+      css(chk, { margin: "0", accentColor: v.color });
       const chkLabel = document.createElement("span");
       chkLabel.textContent = v.label;
       lblWrap.append(chk, chkLabel);
-      chk.onchange = () => {
-        skipTypes[k] = chk.checked;
-        saveSkipTypes(skipTypes);
-        invalidateMergedCache();
-      };
+      chk.onchange = () => { skipTypes[k] = chk.checked; saveSkipTypes(skipTypes); invalidateMergedCache(); };
       typesFlex.appendChild(lblWrap);
     }
     body.appendChild(typesFlex);
 
+    const autoplayRow = document.createElement("div");
+    Object.assign(autoplayRow.style, { display: "flex", gap: "8px", alignItems: "center", marginBottom: "6px" });
+
     const autoplayWrap = document.createElement("label");
-    Object.assign(autoplayWrap.style, {
-      display: "flex", alignItems: "center", gap: "4px",
-      cursor: "pointer", fontSize: "13px", color: "#e0e0e0",
-      fontWeight: "bold", marginBottom: "6px",
-    });
+    Object.assign(autoplayWrap.style, { display: "flex", alignItems: "center", gap: "4px", cursor: "pointer", fontSize: "13px", color: "#e0e0e0", fontWeight: "bold" });
     const autoplayChk = document.createElement("input");
-    autoplayChk.type = "checkbox";
-    autoplayChk.checked = autoplay;
+    autoplayChk.type = "checkbox"; autoplayChk.checked = autoplay;
     Object.assign(autoplayChk.style, { margin: "0" });
     const autoplayLbl = document.createElement("span");
     autoplayLbl.textContent = "Autoplay";
     autoplayWrap.append(autoplayChk, autoplayLbl);
     autoplayChk.onchange = () => { autoplay = autoplayChk.checked; GM_setValue("autoplay", autoplay); };
-    body.appendChild(autoplayWrap);
+
+    const lockWrap = document.createElement("label");
+    Object.assign(lockWrap.style, { display: "flex", alignItems: "center", gap: "4px", cursor: "pointer", fontSize: "13px", color: "#e0e0e0", fontWeight: "bold" });
+    const lockChk = document.createElement("input");
+    lockChk.type = "checkbox"; lockChk.checked = lockSeg;
+    Object.assign(lockChk.style, { margin: "0", accentColor: "#f9c74f" });
+    const lockLbl = document.createElement("span");
+    lockLbl.textContent = "Lock seg";
+    lockWrap.append(lockChk, lockLbl);
+    lockChk.onchange = () => { lockSeg = lockChk.checked; GM_setValue("lock_seg", lockSeg); };
+
+    autoplayRow.append(autoplayWrap, lockWrap);
+    body.appendChild(autoplayRow);
 
     const div2 = document.createElement("div");
-    Object.assign(div2.style, { borderTop: "1px solid #2a2a4a", marginBottom: "5px" });
+    css(div2, { ...S.divider, marginBottom: "5px" });
     body.appendChild(div2);
 
+    /* ── Segment list ── */
     const listEl = document.createElement("div");
-    Object.assign(listEl.style, { maxHeight: "110px", overflowY: "auto" });
+    css(listEl, { maxHeight: "110px", overflowY: "auto" });
     body.appendChild(listEl);
 
     function renderList() {
@@ -463,16 +671,16 @@
       if (!segs.length) {
         const empty = document.createElement("div");
         empty.textContent = "No segments yet";
-        Object.assign(empty.style, { color: "#6c757d", fontSize: "12px", padding: "2px 0", fontWeight: "bold" });
+        css(empty, { color: "#6c757d", fontSize: "12px", padding: "2px 0", fontWeight: "bold" });
         listEl.appendChild(empty); return;
       }
       const fragment = document.createDocumentFragment();
       segs.forEach((seg, i) => {
         const r = document.createElement("div");
-        Object.assign(r.style, {
+        css(r, {
           display: "flex", alignItems: "center", gap: "6px",
           padding: "3px 4px", borderBottom: "1px solid #16213e",
-          flexWrap: "nowrap", minHeight: "26px"
+          flexWrap: "nowrap", minHeight: "26px",
         });
 
         function commitEdit(newType, newStart, newEnd) {
@@ -482,26 +690,26 @@
           refreshTimeline(loadSegs(), liveDur());
           renderList();
         }
-        // === BADGE [OP] ===
+
         const badge = document.createElement("span");
         badge.textContent = TYPES[seg.type]?.label || seg.type;
-        Object.assign(badge.style, {
+        css(badge, {
           background: TYPES[seg.type]?.color || "#555", color: "#fff",
           padding: "2px 7px", borderRadius: "4px", fontSize: "13px",
           fontWeight: "bold", whiteSpace: "nowrap", height: "22px",
-          lineHeight: "18px", display: "flex", alignItems: "center", cursor: "pointer"
+          lineHeight: "18px", display: "flex", alignItems: "center", cursor: "pointer",
         });
         badge.title = "Click to change type";
         badge.onclick = () => {
           timeSpan.style.display = "none";
           const picker = document.createElement("div");
-          Object.assign(picker.style, { display: "flex", flexWrap: "wrap", gap: "2px" });
+          css(picker, { display: "flex", flexWrap: "wrap", gap: "2px" });
           for (const [k, v] of Object.entries(TYPES)) {
             const opt = document.createElement("span");
             opt.textContent = v.label;
-            Object.assign(opt.style, {
-              background: k === seg.type ? v.color : "#2a2a4a",
-              color: "#fff", padding: "1px 5px", borderRadius: "3px",
+            css(opt, {
+              background: k === seg.type ? v.color : "#2a2a4a", color: "#fff",
+              padding: "1px 5px", borderRadius: "3px",
               fontSize: "13px", fontWeight: "bold", cursor: "pointer", whiteSpace: "nowrap",
             });
             opt.onmousedown = e => { e.preventDefault(); commitEdit(k, seg.start, seg.end); };
@@ -513,61 +721,28 @@
           setTimeout(() => document.addEventListener("mousedown", cancel), 0);
         };
 
-        // === TIMELINE — click to edit start/end ===
         const timeSpan = document.createElement("span");
         timeSpan.textContent = fmt(seg.start) + " – " + fmt(seg.end);
-        Object.assign(timeSpan.style, {
-          flex: "1", fontSize: "12.5px", color: "#adb5bd", fontWeight: "bold",
+        css(timeSpan, {
+          flex: "1", fontSize: "13px", color: "#adb5bd", fontWeight: "bold",
           whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-          height: "22px", lineHeight: "18px", display: "flex", alignItems: "center", cursor: "pointer"
+          height: "22px", lineHeight: "18px", display: "flex", alignItems: "center", cursor: "pointer",
         });
+        if (editIndex === i) timeSpan.style.color = "#f9c74f";
         timeSpan.title = "Click to edit times";
-        timeSpan.onclick = () => {
-          const editRow = document.createElement("div");
-          Object.assign(editRow.style, { display: "flex", gap: "3px", flex: "1", alignItems: "center" });
-
-          const mkInp = val => {
-            const inp = document.createElement("input");
-            inp.type = "text"; inp.value = fmt(val);
-            Object.assign(inp.style, {
-              width: "52px", padding: "2px 4px", background: "#0f3460", color: "#e0e0e0", marginBottom: "0",
-              border: "none", borderRadius: "4px", fontSize: "12px", fontWeight: "bold", height: "22px"
-            });
-            attachAutoFormat(inp);
-            return inp;
-          };
-
-          const inS = mkInp(seg.start);
-          const inE = mkInp(seg.end);
-          const sep = document.createElement("span");
-          sep.textContent = "–";
-          Object.assign(sep.style, { color: "#adb5bd", fontSize: "12px" });
-
-          const confirmEdit = () => {
-            const s = parseFmt(inS.value), e = parseFmt(inE.value);
-            if (isNaN(s) || isNaN(e) || e <= s) { showToast("Check start / end times"); return; }
-            commitEdit(seg.type, s, e);
-          };
-          [inS, inE].forEach(inp => inp.addEventListener("keydown", ev => { if (ev.key === "Enter") confirmEdit(); if (ev.key === "Escape") renderList(); }));
-
-          editRow.append(inS, sep, inE);
-          timeSpan.replaceWith(editRow);
-          delBtn.textContent = "v";
-          Object.assign(delBtn.style, { background: "#06d6a0" });
-          delBtn.onclick = confirmEdit;
-          inS.focus();
-        };
+        timeSpan.onclick = () => startEditSegment(i);
 
         const delBtn = document.createElement("button");
         delBtn.textContent = "×";
-        Object.assign(delBtn.style, {
+        css(delBtn, {
           padding: "2px 8px", background: "#e63946", color: "#fff",
           border: "none", borderRadius: "4px", cursor: "pointer",
           fontSize: "13px", fontWeight: "bold", height: "22px",
           lineHeight: "18px", display: "flex", alignItems: "center",
-          justifyContent: "center", minWidth: "22px", margin: "0", marginBottom: "0"
+          justifyContent: "center", minWidth: "22px", margin: "0",
         });
         delBtn.onclick = () => {
+          if (editIndex === i) { resetForm(); renderList();}
           const s = loadSegs();
           s.splice(i, 1);
           saveSegs(s);
@@ -581,23 +756,36 @@
       listEl.appendChild(fragment);
     }
 
-    /* Upstream + IO (unchanged) */
+    /* ── Upstream + IO ── */
     const urlDiv = document.createElement("div");
-    Object.assign(urlDiv.style, { marginTop: "6px", borderTop: "1px solid #2a2a4a", paddingTop: "6px" });
+    css(urlDiv, { marginTop: "6px", borderTop: "1px solid #2a2a4a", paddingTop: "6px" });
+
+    const urlLabelRow = document.createElement("div");
+    css(urlLabelRow, { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "3px" });
 
     const urlLabel = document.createElement("div");
     urlLabel.textContent = "JSON URL";
-    Object.assign(urlLabel.style, { color: "#adb5bd", fontSize: "12px", marginBottom: "3px", fontWeight: "bold" });
+    css(urlLabel, { ...S.label, marginBottom: "0" });
+
+    const overrideWrap = document.createElement("label");
+    css(overrideWrap, {
+      display: "flex", alignItems: "center", gap: "4px",
+      cursor: "pointer", fontSize: "12px",
+      color: "#adb5bd", fontWeight: "bold",
+    });
+    const overrideChk = document.createElement("input");
+    overrideChk.type = "checkbox";
+    const ovText = document.createElement("span");
+    ovText.textContent = "Override";
+    overrideWrap.append(overrideChk, ovText);
+    urlLabelRow.append(urlLabel, overrideWrap);
 
     const urlInput = document.createElement("input");
     urlInput.type = "text";
     urlInput.placeholder = "https://exam.ple/aniskip.json";
     urlInput.value = GM_getValue("upstream_url", "");
-    Object.assign(urlInput.style, {
-      width: "100%", padding: "4px 6px", background: "#0f3460", color: "#e0e0e0",
-      border: "none", borderRadius: "4px", fontSize: "13px",
-      boxSizing: "border-box", marginBottom: "4px",
-    });
+    css(urlInput, { ...S.input, width: "100%", padding: "4px 6px", boxSizing: "border-box", marginBottom: "4px" });
+
     async function validateUrlInput() {
       const url = urlInput.value.trim();
       if (!url) { urlInput.style.border = ""; return; }
@@ -611,23 +799,13 @@
     urlInput.addEventListener("change", () => { GM_setValue("upstream_url", urlInput.value.trim()); });
     urlInput.addEventListener("blur", validateUrlInput);
     validateUrlInput();
-    const overrideWrap = document.createElement("label");
-    Object.assign(overrideWrap.style, {
-      display: "flex", alignItems: "center", gap: "4px",
-      marginBottom: "4px", cursor: "pointer", fontSize: "12px", color: "#adb5bd", fontWeight: "bold"
-    });
-    const overrideChk = document.createElement("input");
-    overrideChk.type = "checkbox";
-    const ovText = document.createElement("span");
-    ovText.textContent = "Override";
-    overrideWrap.append(overrideChk, ovText);
 
     const syncRow = document.createElement("div");
-    Object.assign(syncRow.style, { display: "flex", gap: "4px", marginBottom: "4px" });
+    css(syncRow, { display: "flex", gap: "4px", marginBottom: "4px" });
 
     const syncBtn = document.createElement("button");
     syncBtn.textContent = "Sync";
-    Object.assign(syncBtn.style, {
+    css(syncBtn, {
       flex: "1", padding: "5px", background: "#06d6a0", color: "#1a1a2e",
       border: "none", borderRadius: "4px", cursor: "pointer",
       fontWeight: "bold", fontSize: "13px", marginBottom: "2px",
@@ -643,14 +821,10 @@
         if (cachedEtag) headers["If-None-Match"]     = cachedEtag;
         else if (cachedLM) headers["If-Modified-Since"] = cachedLM;
 
-        // keep cache-buster only on first fetch (no validators yet)
         const fetchUrl = (cachedEtag || cachedLM) ? url : url + "?_=" + Date.now();
         const res = await fetch(fetchUrl, { headers });
 
-        if (res.status === 304) {
-          showToast("Already up to date");
-          syncBtn.textContent = "Sync"; return;
-        }
+        if (res.status === 304) { showToast("Already up to date"); syncBtn.textContent = "Sync"; return; }
         if (!res.ok) throw new Error(res.status);
 
         const etag = res.headers.get("ETag");
@@ -665,7 +839,6 @@
         renderList();
         showToast("Synced +" + r.added + " new, " + r.skipped + " skipped" + (override ? " (override)" : ""));
 
-        // snapshot save is secondary — defer off critical path
         setTimeout(() => GM_setValue("upstream_snapshot", JSON.stringify(parsed)), 0);
       } catch (e) { showToast("Sync failed: " + e.message); }
       syncBtn.textContent = "Sync";
@@ -673,9 +846,10 @@
 
     const diffBtn = document.createElement("button");
     diffBtn.textContent = "Export diff";
-    Object.assign(diffBtn.style, {
-      flex: "1", padding: "5px", background: "#f77f00", color: "#fff", marginBottom: "2px",
-      border: "none", borderRadius: "4px", cursor: "pointer", fontSize: "13px", fontWeight: "bold",
+    css(diffBtn, {
+      flex: "1", padding: "5px", background: "#f77f00", color: "#fff",
+      border: "none", borderRadius: "4px", cursor: "pointer",
+      fontSize: "13px", fontWeight: "bold", marginBottom: "2px",
     });
     diffBtn.onclick = () => {
       let upstream = {};
@@ -683,7 +857,7 @@
       const local = getAllLocal();
       const diff = {};
       for (const [key, segs] of Object.entries(local)) {
-        const upSegs = upstream[key] || [];
+        const upSegs  = upstream[key] || [];
         const newSegs = segs.filter(s => !upSegs.some(u => u.start === s.start && u.end === s.end));
         if (newSegs.length) diff[key] = newSegs;
       }
@@ -693,18 +867,15 @@
     };
 
     syncRow.append(syncBtn, diffBtn);
-    urlDiv.append(urlLabel, urlInput, overrideWrap, syncRow);
+    urlDiv.append(urlLabelRow, urlInput, syncRow);
     body.appendChild(urlDiv);
 
     const ioRow = document.createElement("div");
-    Object.assign(ioRow.style, { display: "flex", gap: "4px", marginTop: "2px" });
+    css(ioRow, { display: "flex", gap: "4px", marginTop: "2px" });
 
     const exportBtn = document.createElement("button");
     exportBtn.textContent = "Export all";
-    Object.assign(exportBtn.style, {
-      flex: "1", padding: "5px", background: "#0f3460", color: "#e0e0e0", marginBottom: "2px",
-      border: "none", borderRadius: "4px", cursor: "pointer", fontSize: "13px", fontWeight: "bold",
-    });
+    css(exportBtn, { ...S.input, flex: "1", padding: "5px", cursor: "pointer", marginBottom: "2px" });
     exportBtn.onclick = () => {
       const all = getAllLocal();
       download("aniskip.json", JSON.stringify(all, null, 2));
@@ -713,10 +884,7 @@
 
     const importBtn = document.createElement("button");
     importBtn.textContent = "Import file";
-    Object.assign(importBtn.style, {
-      flex: "1", padding: "5px", background: "#0f3460", color: "#e0e0e0", marginBottom: "2px",
-      border: "none", borderRadius: "4px", cursor: "pointer", fontSize: "13px", fontWeight: "bold",
-    });
+    css(importBtn, { ...S.input, flex: "1", padding: "5px", cursor: "pointer", marginBottom: "2px" });
     importBtn.onclick = () => {
       const fileInput = document.createElement("input");
       fileInput.type = "file"; fileInput.accept = ".json";
@@ -741,10 +909,11 @@
 
     const clearAllBtn = document.createElement("button");
     clearAllBtn.textContent = "Clear ALL";
-    Object.assign(clearAllBtn.style, {
+    css(clearAllBtn, {
       width: "100%", padding: "5px", marginTop: "4px",
       background: "#6c1f1f", color: "#ffaaaa",
-      border: "none", borderRadius: "4px", cursor: "pointer", fontSize: "13px", fontWeight: "bold",
+      border: "none", borderRadius: "4px", cursor: "pointer",
+      fontSize: "13px", fontWeight: "bold",
     });
     clearAllBtn.onclick = () => {
       if (!confirm("Delete ALL saved segments?")) return;
@@ -757,10 +926,8 @@
 
     wrap.append(hdr, body);
     document.body.appendChild(wrap);
-
     renderList();
 
-    let collapsed = true;
     collapseBtn.onclick = () => {
       collapsed = !collapsed;
       body.style.display = collapsed ? "none" : "block";
@@ -768,22 +935,19 @@
     };
 
     hdr.addEventListener("mousedown", e => {
-    e.preventDefault();
-    const MARGIN = 10;
-    let px = e.clientX, py = e.clientY;
-
-    const onMove = ev => {
-      wrap.style.left   = Math.max(MARGIN, Math.min(wrap.offsetLeft + ev.clientX - px, window.innerWidth  - wrap.offsetWidth  - MARGIN)) + "px";
-      wrap.style.top    = Math.max(MARGIN, Math.min(wrap.offsetTop  + ev.clientY - py, window.innerHeight - wrap.offsetHeight - MARGIN)) + "px";
-      wrap.style.right  = "auto";
-      wrap.style.bottom = "auto";
-      px = ev.clientX;
-      py = ev.clientY;
-    };
-
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", () => document.removeEventListener("mousemove", onMove), { once: true });
-  });
+      e.preventDefault();
+      const MARGIN = 10;
+      let px = e.clientX, py = e.clientY;
+      const onMove = ev => {
+        wrap.style.left   = Math.max(MARGIN, Math.min(wrap.offsetLeft + ev.clientX - px, window.innerWidth  - wrap.offsetWidth  - MARGIN)) + "px";
+        wrap.style.top    = Math.max(MARGIN, Math.min(wrap.offsetTop  + ev.clientY - py, window.innerHeight - wrap.offsetHeight - MARGIN)) + "px";
+        wrap.style.right  = "auto";
+        wrap.style.bottom = "auto";
+        px = ev.clientX; py = ev.clientY;
+      };
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", () => document.removeEventListener("mousemove", onMove), { once: true });
+    });
 
     return renderList;
   }
@@ -794,12 +958,13 @@
     for (const key of GM_listValues()) {
       if (NON_SEG_KEYS.has(key)) continue;
       try {
-        let segs = JSON.parse(GM_getValue(key, "[]")) || [];
+        const segs = JSON.parse(GM_getValue(key, "[]")) || [];
         if (Array.isArray(segs) && segs.length) all[key] = segs;
       } catch (_) {}
     }
     return all;
   }
+
   function mergeInto(parsed, override = false) {
     let added = 0, skipped = 0;
     const entries = Array.isArray(parsed) ? [[storeKey(), parsed]] : Object.entries(parsed);
@@ -815,22 +980,17 @@
         let newAdded = 0;
         for (const seg of usegs) {
           const id = seg.start + "," + seg.end;
-          if (!existSet.has(id)) {
-            existing.push(seg);
-            existSet.add(id);
-            newAdded++;
-          }
+          if (!existSet.has(id)) { existing.push(seg); existSet.add(id); newAdded++; }
         }
         GM_setValue(key, JSON.stringify(existing));
-        if (newAdded > 0) added += newAdded;
-        else skipped++;
+        if (newAdded > 0) added += newAdded; else skipped++;
       }
     }
     return { added, skipped };
   }
-  function clearAll() {
-    for (const key of GM_listValues()) GM_deleteValue(key);
-  }
+
+  function clearAll() { for (const key of GM_listValues()) GM_deleteValue(key); }
+
   function download(filename, data) {
     const blob = new Blob([data], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -844,6 +1004,7 @@
     new MutationObserver((_, obs) => { if (document.body) { obs.disconnect(); cb(); } })
       .observe(document.documentElement, { childList: true });
   }
+
   waitForBody(() => {
     new MutationObserver((mutations) => {
       for (const mutation of mutations) {
@@ -851,13 +1012,12 @@
           if (!(node instanceof HTMLElement)) continue;
           const popup = node.classList.contains("lobibox-confirm") ? node : node.querySelector?.(".lobibox-confirm");
           if (!popup) continue;
-          // Only act when lobibox actually appears
           const bold = popup.querySelector(".lobibox-body-text b");
           if (bold) {
             const timeInput = document.querySelector("#avs-widget input[placeholder='MM:SS']");
             if (timeInput) {
               timeInput.value = bold.textContent.trim();
-              timeInput.dispatchEvent(new Event("blur")); // trigger autoFmt formatting
+              timeInput.dispatchEvent(new Event("blur"));
             }
           }
           popup.remove();
@@ -866,10 +1026,11 @@
       }
     }).observe(document.body, { childList: true, subtree: true });
   });
+
   waitForBody(() => {
     skipTypes = loadSkipTypes();
     buildWidget();
-
+    _cachedDur = liveDur(); updateHdrStats();
     setInterval(() => {
       if (!_cachedDur) _cachedDur = liveDur();
       if (_cachedDur > 0) refreshTimeline(loadSegs(), _cachedDur);
@@ -900,7 +1061,7 @@
       while (lo <= hi) {
         const mid = (lo + hi) >>> 1;
         const seg = merged[mid];
-        if (pos < seg.start)   hi = mid - 1;
+        if (pos < seg.start)     hi = mid - 1;
         else if (pos >= seg.end) lo = mid + 1;
         else return seg;
       }
@@ -908,30 +1069,44 @@
     }
 
     setInterval(() => {
+       if (lockSeg && editIndex !== null) {
+         const pos = liveGetPos();
+         const seg = loadSegs()[editIndex];
+         const s = inStart._raw ?? (inStart.value.trim() ? parseFmt(inStart.value) : null);
+         const e = inEnd._raw   ?? (inEnd.value.trim()   ? parseFmt(inEnd.value)   : null);
+         if (pos !== null && s !== null && !isNaN(s) && e !== null && !isNaN(e)) {
+           if (pos >= e || pos < s) {
+            const v = document.querySelector("#media-player video, video");
+            if (v && !v.paused) {
+              v.currentTime = s;
+            }
+           }
+         }
+         return;
+      }
       if (Date.now() - lastSkip < SKIP_COOL) return;
       const pos = liveGetPos();
-      if ((pos === null || pos === 0) && autoplay) {
-          const v = document.querySelector("#media-player video, video");
-          if (v) {
-              v.currentTime = 0;
-              if (v.paused) v.play().catch(() => {}); // force play if video is idle
-          }
-          showToast("Autoplay");
-          const _segs = loadSegs();
-          const merged = getMergedSkipSegs(_segs);
-          const startSeg = merged.find(seg => seg.start === 0);
-          liveSeekTo(startSeg ? startSeg.end : 0);
-          return;
+      if ((pos === null || pos === 0) && autoplay && editIndex === null) {
+        const v = document.querySelector("#media-player video, video");
+        if (v) { v.currentTime = 0; if (v.paused) v.play().catch(() => {}); }
+        showToast("Autoplay");
+        const _segs  = loadSegs();
+        const merged = getMergedSkipSegs(_segs);
+        const startSeg = merged.find(seg => seg.start === 0);
+        liveSeekTo(startSeg ? startSeg.end : 0);
+        return;
       }
       if (pos === null || pos === 0) return;
-      const merged = getMergedSkipSegs(loadSegs());
-      const hit = bsearchSeg(merged, pos);
-      if (hit) {
+      const _segs  = loadSegs();
+      const merged = getMergedSkipSegs(_segs);
+      const hit      = bsearchSeg(merged, pos);
+      const hitIndex = hit ? _segs.findIndex(s => s.start === hit.start && s.end === hit.end) : -1;
+      if (hit && hitIndex !== editIndex) {
         lastSkip = Date.now();
         liveSeekTo(hit.end);
         showToast("Skipped " + hit.labels.join(" + "));
       }
-    }, 300);
+    }, 100);
 
     detectPlayer((jwp, videoEl) => {
       initEngine(jwp, videoEl);
