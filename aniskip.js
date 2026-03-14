@@ -3,7 +3,7 @@
 // @namespace    https://github.com/zebra2711/aniskip
 // @version      0.1
 // @description  Skip OP, ED, recaps, and filler on AnimeVietSub
-// @match        *://animevietsub.mx/phim/*
+// @match        *://animevietsub.mx/phim/*/*.html
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_deleteValue
@@ -210,6 +210,7 @@
   let inStart = null;
   let inEnd = null;
 
+
   function invalidateMergedCache() { _mergedCache = null; }
 
   function getJwp() {
@@ -232,9 +233,9 @@
   function initEngine(jwp, videoEl) {
     function onMeta() {
       _cachedDur = liveDur();
-      const migrated = migrateSegsEndSentinel(loadSegs(), _cachedDur);
+      const migrated = migrateSegsEndSentinel(_segsCache ?? loadSegs(), _cachedDur);
       if (migrated !== loadSegs()) saveSegs(migrated);
-      efreshTimeline(loadSegs(), _cachedDur);
+      refreshTimeline(_segsCache ?? loadSegs(), _cachedDur);
       updateHdrStats();
     }
     if (jwp) {
@@ -342,7 +343,7 @@
 
     updateHdrStats = function () {
       const dur  = _cachedDur;
-      const segs = loadSegs();
+      const segs = _segsCache ?? loadSegs();
       const saved = segs.reduce((acc, s) => acc + (resolveEnd(s, dur) - s.start), 0);
       hdrDur.textContent   = dur > 0   ? fmt(dur - saved) : "";
       hdrSaved.textContent = saved > 0 ? "+ " + fmt(saved) : "";
@@ -419,7 +420,7 @@
       if (pos === null) return;
       const ms = String(Math.round((pos % 1) * 1000)).padStart(3, "0");
       nudgeCurr.textContent = fmt(pos) + "." + ms;
-    }, 80);
+    }, 250);
 
     /* ── Nudge row 2: step [-] [val] [+] [ms|s] ── */
     const nudgeRow2 = document.createElement("div");
@@ -662,7 +663,7 @@
     }
 
     function startEditSegment(i) {
-      const seg = loadSegs()[i];
+      const seg = (_segsCache ?? loadSegs())[i];
       if (!seg) return;
       editIndex = i;
       liveSeekTo(seg.start, false);
@@ -709,7 +710,7 @@
       }
       saveSegs(segs);
       resetForm();
-      refreshTimeline(loadSegs(), liveDur());
+      refreshTimeline(_segsCache ?? loadSegs(), _cachedDur || liveDur());
       renderList();
     };
 
@@ -776,7 +777,7 @@
 
     function renderList() {
       listEl.innerHTML = "";
-      const segs = loadSegs();
+      const segs = _segsCache ?? loadSegs();
       if (!segs.length) {
         const empty = document.createElement("div");
         empty.textContent = "No segments yet";
@@ -796,7 +797,7 @@
           const s = loadSegs();
           s[i] = { type: newType, start: newStart, end: newEnd };
           saveSegs(s);
-          refreshTimeline(loadSegs(), liveDur());
+          refreshTimeline(_segsCache ?? loadSegs(), _cachedDur || liveDur());
           renderList();
         }
 
@@ -856,7 +857,7 @@
           const s = loadSegs();
           s.splice(i, 1);
           saveSegs(s);
-          refreshTimeline(loadSegs(), liveDur());
+          refreshTimeline(_segsCache ?? loadSegs(), _cachedDur || liveDur());
           renderList();
         };
 
@@ -951,9 +952,9 @@
             _segsCache = null;
             _segsCacheKey = null;
             invalidateMergedCache();
+            refreshTimeline(loadSegs(), _cachedDur || liveDur());
+            renderList();
           }
-          refreshTimeline(loadSegs(), liveDur());
-          renderList();
         }
         showToast("Synced +" + r.added + " new, " + r.skipped + " skipped" + (override ? " (override)" : ""));
 
@@ -1019,9 +1020,9 @@
                 _segsCache = null;
                 _segsCacheKey = null;
                 invalidateMergedCache();
+                refreshTimeline(loadSegs(), _cachedDur || liveDur());
+                renderList();
               }
-              refreshTimeline(loadSegs(), liveDur());
-              renderList();
             }
             showToast("Imported +" + r.added + " segs, " + r.skipped + " episode(s) skipped");
           } catch (_) { showToast("Failed to parse file"); }
@@ -1044,7 +1045,7 @@
       fontWeight: "bold", fontSize: "13px",
     });
     autoBtn.onclick = () => {
-      const existing = loadSegs();
+      const existing = _segsCache ?? loadSegs();
       const existingTypes = new Set(existing.map(s => s.type));
       if (existingTypes.has("op") && existingTypes.has("ed")) {
         showToast("Already has OP + ED, skipped"); return;
@@ -1056,7 +1057,7 @@
       const toAdd = variant.filter(v => !existingTypes.has(v.type));
       if (!toAdd.length) { showToast("All types already present"); return; }
       saveSegs([...existing, ...toAdd.map(v => ({ type: v.type, start: v.start, end: v.end, is_end: !!v.is_end }))]);
-      refreshTimeline(loadSegs(), liveDur());
+      refreshTimeline(_segsCache ?? loadSegs(), _cachedDur || liveDur());
       renderList();
       autoBtn.textContent = "Auto (" + (_autoVariantIdx + 1) + "/" + _autoVariants.length + ")";
       showToast(
@@ -1073,6 +1074,27 @@
       border: "none", borderRadius: "4px", cursor: "pointer",
       fontSize: "13px", fontWeight: "bold",
     });
+    function clearAll() {
+      // Delete ALL episode segment data (keep settings & upstream snapshot)
+      for (const key of GM_listValues()) {
+        if (!NON_SEG_KEYS.has(key)) {
+          GM_deleteValue(key);
+        }
+      }
+
+      // Reset all runtime caches
+      _segsCache = null;
+      _segsCacheKey = null;
+      _mergedCache = null;
+      _autoVariants = null;
+      _autoVariantIdx = -1;
+      invalidateMergedCache();
+
+      // Force refresh of current episode
+      _segsCache = [];
+      _segsCacheKey = storeKey();
+    }
+
     clearAllBtn.onclick = () => {
       if (!confirm("Delete ALL saved segments?")) return;
       clearAll();
@@ -1150,7 +1172,7 @@
   }
 
   function getSeriesSlug() {
-    const parts = storeKey().split("/");
+    const parts = (_segsCacheKey ?? storeKey()).split("/");
     return parts.length >= 2 ? parts[1] : "";
   }
 
@@ -1188,7 +1210,7 @@
     function seriesSlugOf(k) { return k.split("/")[0] || ""; }
 
     // Filter siblings: must share series slug, must not be current episode
-    let siblings = Object.entries(all).filter(([k]) => k !== storeKey() && k.includes(slug));
+    let siblings = Object.entries(all).filter(([k]) => k !== (_segsCacheKey ?? storeKey()) && k.includes(slug));
 
     // Fallback: if no same-series siblings, find other series by name similarity
     // e.g. "sousou-no-frieren-i2-a5073" matches "sousou-no-frieren-2nd-season-a5448"
@@ -1279,7 +1301,7 @@
       const m = (k.split("/").pop() || "").match(/(?:tap-|ep-)(\d+)/i);
       return m ? parseInt(m[1], 10) : null;
     }
-    const curEpNum = epNum(storeKey());
+    const curEpNum = epNum(_segsCacheKey ?? storeKey());
 
     const simWeights = effectiveSibs.map(([k], idx) => {
       const s = cosine(sibVecs[idx], centroid);
@@ -1546,9 +1568,9 @@
     _cachedDur = liveDur(); updateHdrStats();
     setInterval(() => {
       if (!_cachedDur) _cachedDur = liveDur();
-      if (_cachedDur > 0) refreshTimeline(loadSegs(), _cachedDur);
+      if (_cachedDur > 0) refreshTimeline(_segsCache ?? loadSegs(), _cachedDur);
       updateHdrStats();
-    }, 100);
+    }, 1000);
 
     function getMergedSkipSegs(segs) {
       if (_mergedCache) return _mergedCache;
@@ -1584,18 +1606,20 @@
     }
 
     setInterval(() => {
-       if (lockSeg && editIndex !== null) {
-         const pos = liveGetPos();
-         const seg = loadSegs()[editIndex];
-         const s = inStart._raw ?? (inStart.value.trim() ? parseFmt(inStart.value) : null);
-         const rawE = inEnd._raw ?? (inEnd.value.trim() ? parseFmt(inEnd.value) : null);
-         const e = (rawE === -1 || rawE === null) ? (_cachedDur || liveDur() || Infinity) : rawE;
-         if (pos !== null && s !== null && !isNaN(s) && e !== null && !isNaN(e) && e > 0) {
-           if (pos >= e || pos < s) {
-            const v = document.querySelector("#media-player video, video");
-            if (v && !v.paused) {
-              v.currentTime = s;
-            }
+       if (editIndex !== null) {
+         if (lockSeg) {
+           const pos = liveGetPos();
+           const seg = (_segsCache ?? loadSegs())[editIndex];
+           const s = inStart._raw ?? (inStart.value.trim() ? parseFmt(inStart.value) : null);
+           const rawE = inEnd._raw ?? (inEnd.value.trim() ? parseFmt(inEnd.value) : null);
+           const e = (rawE === -1 || rawE === null) ? (_cachedDur || liveDur() || Infinity) : rawE;
+           if (pos !== null && s !== null && !isNaN(s) && e !== null && !isNaN(e) && e > 0) {
+             if (pos >= e || pos < s) {
+              const v = document.querySelector("#media-player video, video");
+              if (v && !v.paused) {
+                v.currentTime = s;
+              }
+             }
            }
          }
          return;
@@ -1605,15 +1629,16 @@
       if ((pos === null || pos === 0) && autoplay && editIndex === null) {
         const v = document.querySelector("#media-player video, video");
         if (v) { v.currentTime = 0; if (v.paused) v.play().catch(() => {}); }
-        showToast("Autoplay");
-        const _segs  = loadSegs();
+        // if (_cachedDur > 0)
+        //   showToast("Autoplay");
+        const _segs  = _segsCache ?? loadSegs();
         const merged = getMergedSkipSegs(_segs);
         const startSeg = merged.find(seg => seg.start === 0);
         liveSeekTo(startSeg ? startSeg.end : 0);
         return;
       }
       if (pos === null || pos === 0) return;
-      const _segs  = loadSegs();
+      const _segs = _segsCache ?? loadSegs();
       const merged = getMergedSkipSegs(_segs);
       const hit      = bsearchSeg(merged, pos);
       const hitIndex = hit ? _segs.findIndex(s => s.start === hit.start && s.end === hit.end) : -1;
@@ -1622,13 +1647,13 @@
         liveSeekTo(hit.end);
         showToast("Skipped " + hit.labels.join(" + "));
       }
-    }, 100);
+    }, 250);
 
     detectPlayer((jwp, videoEl) => {
       initEngine(jwp, videoEl);
       const inp = document.querySelector("#avs-widget input");
       if (inp) inp.placeholder = "MM:SS";
-      refreshTimeline(loadSegs(), liveDur());
+      refreshTimeline(_segsCache ?? loadSegs(), _cachedDur || liveDur());
     });
   });
 })();
