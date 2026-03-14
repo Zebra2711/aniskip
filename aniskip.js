@@ -1303,42 +1303,42 @@
     });
 
     // DBSCAN on start position — order-independent, no greedy bias
-    const EPS = 60, MIN_PTS = 2;
-    function dbscan(entries) {
-      // Trick 1: sort by start so neighbor scan is O(n) sliding window, not O(n²)
-      const pts = [...entries].sort((a, b) => a.start - b.start);
-      const n = pts.length;
-      const label = new Int32Array(n).fill(-1); // -1 unvisited, 0 noise, >0 cluster
-
-      function neighbors(idx) {
-        const out = [idx];
-        for (let j = idx - 1; j >= 0 && pts[idx].start - pts[j].start <= EPS; j--) out.push(j);
-        for (let j = idx + 1; j < n  && pts[j].start - pts[idx].start <= EPS; j++) out.push(j);
-        return out;
-      }
-    // const MIN_PTS = 2;
-    // // Scale to video duration — not magic numbers:
-    // // OP/ED start can drift ~12% of dur within same series (data: 162s/1420s)
-    // // Length variance is tight ~1% of dur (data: ±5s on 90s seg in 1420s video)
-    // // Fallback to absolute floor when dur unknown (short clips / no metadata yet)
-    // const durRef  = curDur > 0 ? curDur : 1500;
-    // const EPS_START = Math.max(60,  durRef * 0.12);
-    // const EPS_LEN   = Math.max(10,  durRef * 0.01);
+    // const EPS = 60, MIN_PTS = 2;
     // function dbscan(entries) {
-    //   // Trick 1: sort by start — sliding window still O(n) for start scan
+    //   // Trick 1: sort by start so neighbor scan is O(n) sliding window, not O(n²)
     //   const pts = [...entries].sort((a, b) => a.start - b.start);
     //   const n = pts.length;
-    //   const label = new Int32Array(n).fill(-1);
+    //   const label = new Int32Array(n).fill(-1); // -1 unvisited, 0 noise, >0 cluster
 
     //   function neighbors(idx) {
     //     const out = [idx];
-    //     // expand left/right within start window, then filter by len
-    //     for (let j = idx - 1; j >= 0 && pts[idx].start - pts[j].start <= EPS_START; j--)
-    //       if (Math.abs(pts[idx].len - pts[j].len) <= EPS_LEN) out.push(j);
-    //     for (let j = idx + 1; j < n  && pts[j].start - pts[idx].start <= EPS_START; j++)
-    //       if (Math.abs(pts[idx].len - pts[j].len) <= EPS_LEN) out.push(j);
+    //     for (let j = idx - 1; j >= 0 && pts[idx].start - pts[j].start <= EPS; j--) out.push(j);
+    //     for (let j = idx + 1; j < n  && pts[j].start - pts[idx].start <= EPS; j++) out.push(j);
     //     return out;
     //   }
+    const MIN_PTS = 2;
+    // Scale to video duration — not magic numbers:
+    // OP/ED start can drift ~12% of dur within same series (data: 162s/1420s)
+    // Length variance is tight ~1% of dur (data: ±5s on 90s seg in 1420s video)
+    // Fallback to absolute floor when dur unknown (short clips / no metadata yet)
+    const durRef  = curDur > 0 ? curDur : 1500;
+    const EPS_START = Math.max(60,  durRef * 0.12);
+    const EPS_LEN   = Math.max(10,  durRef * 0.01);
+    function dbscan(entries) {
+      // Trick 1: sort by start — sliding window still O(n) for start scan
+      const pts = [...entries].sort((a, b) => a.start - b.start);
+      const n = pts.length;
+      const label = new Int32Array(n).fill(-1);
+
+      function neighbors(idx) {
+        const out = [idx];
+        // expand left/right within start window, then filter by len
+        for (let j = idx - 1; j >= 0 && pts[idx].start - pts[j].start <= EPS_START; j--)
+          if (Math.abs(pts[idx].len - pts[j].len) <= EPS_LEN) out.push(j);
+        for (let j = idx + 1; j < n  && pts[j].start - pts[idx].start <= EPS_START; j++)
+          if (Math.abs(pts[idx].len - pts[j].len) <= EPS_LEN) out.push(j);
+        return out;
+      }
 
       // Trick 2: proper core-point expansion — only dense points seed clusters,
       // border points get absorbed, true outliers become noise
