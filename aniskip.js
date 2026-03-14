@@ -63,6 +63,21 @@
     GM_setValue(_segsCacheKey, JSON.stringify(s));
   }
 
+  function resolveEnd(seg, dur) {
+    return seg.is_end ? (dur || _cachedDur || liveDur() || 0) : seg.end;
+  }
+
+  function migrateSegsEndSentinel(segs, dur) {
+    if (!dur || !segs.length) return segs;
+    let changed = false;
+    const out = segs.map(s => {
+      if (s.end === -1) { changed = true; return { ...s, end: dur || 0, is_end: true }; }
+      if (s.end !== -1 && Math.abs(s.end - dur) < 5) { changed = true; return { ...s, end: dur, is_end: true }; }
+      if (!s.hasOwnProperty("is_end")) { changed = true; return { ...s, is_end: false }; }
+      return s;
+    });
+    return changed ? out : segs;
+  }
   function fmt(s) {
     s = s < 0 ? 0 : s | 0;
     const hh = (s / 3600) | 0;
@@ -116,7 +131,7 @@
       const text = (e.clipboardData || window.clipboardData).getData("text");
       inp.value = text.replace(/[^\d:.]/g, "").slice(0, 12);
     });
-    inp.addEventListener("blur", () => { if (inp.value) inp.value = autoFmt(inp.value); });
+    inp.addEventListener("blur", () => { if (inp.value && !inp.value.includes(":")) inp.value = autoFmt(inp.value); });
   }
 
   const TYPES = {
@@ -190,6 +205,8 @@
   let _cachedDur = 0;
   let _mergedCache = null;
   let editIndex = null;
+  let _autoVariantIdx = -1;
+  let _autoVariants = null;
   let inStart = null;
   let inEnd = null;
 
@@ -213,11 +230,17 @@
   }
 
   function initEngine(jwp, videoEl) {
-    function onMeta() { _cachedDur = liveDur(); refreshTimeline(loadSegs(), _cachedDur); updateHdrStats(); }
+    function onMeta() {
+      _cachedDur = liveDur();
+      const migrated = migrateSegsEndSentinel(loadSegs(), _cachedDur);
+      if (migrated !== loadSegs()) saveSegs(migrated);
+      efreshTimeline(loadSegs(), _cachedDur);
+      updateHdrStats();
+    }
     if (jwp) {
       jwp.on("meta", onMeta);
       jwp.on("firstFrame", () => { tlContainer = null; _tlSig = ""; onMeta(); });
-      jwp.on("playlistItem", () => { tlContainer = null; _cachedJwp = null; _tlSig = ""; invalidateMergedCache(); });
+      jwp.on("playlistItem", () => { tlContainer = null; _cachedJwp = null; _tlSig = ""; invalidateMergedCache(); _autoVariants = null; _autoVariantIdx = -1; });
     }
     if (videoEl) videoEl.addEventListener("loadedmetadata", () => { tlContainer = null; onMeta(); });
   }
@@ -250,14 +273,15 @@
     tlContainer.innerHTML = "";
     for (const seg of segs) {
       const bar = document.createElement("div");
+      const segEnd = resolveEnd(seg, dur);
       css(bar, {
         position: "absolute", top: "0",
         left: (seg.start / dur * 100) + "%",
-        width: Math.max(0.3, (seg.end - seg.start) / dur * 100) + "%",
+        width: Math.max(0.3, (segEnd - seg.start) / dur * 100) + "%",
         height: "100%", background: TYPES[seg.type]?.color || "#fff",
         opacity: "0.75", borderRadius: "2px", pointerEvents: "none",
       });
-      bar.title = (TYPES[seg.type]?.label || seg.type) + " " + fmt(seg.start) + " – " + fmt(seg.end);
+      bar.title = (TYPES[seg.type]?.label || seg.type) + " " + fmt(seg.start) + " – " + (seg.is_end ? "END" : fmt(seg.end));
       tlContainer.appendChild(bar);
     }
   }
@@ -318,7 +342,7 @@
     updateHdrStats = function () {
       const dur  = _cachedDur;
       const segs = loadSegs();
-      const saved = segs.reduce((acc, s) => acc + (s.end - s.start), 0);
+      const saved = segs.reduce((acc, s) => acc + (resolveEnd(s, dur) - s.start), 0);
       hdrDur.textContent   = dur > 0   ? fmt(dur - saved) : "";
       hdrSaved.textContent = saved > 0 ? "+ " + fmt(saved) : "";
     };
@@ -543,8 +567,9 @@
       fontWeight: "bold", fontSize: "13px", display: "none",
     });
     jumpEndBtn.onclick = () => {
-      const t = inEnd._raw ?? (inEnd.value.trim() ? parseFmt(inEnd.value) : null);
-      if (t !== null && !isNaN(t)) liveSeekTo(t, false); else showToast("Invalid end time");
+      const raw = inEnd._raw ?? (inEnd.value.trim() ? parseFmt(inEnd.value) : null);
+      const t = (raw === -1 || raw === null) ? (_cachedDur || liveDur()) : raw;
+      if (t && !isNaN(t)) liveSeekTo(t, false); else showToast("Invalid end time");
     };
 
     const discardBtn = document.createElement("button");
@@ -576,9 +601,13 @@
       const msS = Math.round((seg.start % 1) * 1000);
       inStart.value = fmt(seg.start) + (msS > 0 ? "." + String(msS).padStart(3, "0") : "");
       inStart._raw = seg.start; inStart._undoVal = inStart.value; inStart._undoRaw = seg.start;
-      const msE = Math.round((seg.end % 1) * 1000);
-      inEnd.value = fmt(seg.end) + (msE > 0 ? "." + String(msE).padStart(3, "0") : "");
-      inEnd._raw = seg.end; inEnd._undoVal = inEnd.value; inEnd._undoRaw = seg.end;
+      if (seg.is_end) {
+        inEnd.value = ""; inEnd._raw = -1; inEnd._undoVal = ""; inEnd._undoRaw = -1;
+      } else {
+        const msE = Math.round((seg.end % 1) * 1000);
+        inEnd.value = fmt(seg.end) + (msE > 0 ? "." + String(msE).padStart(3, "0") : "");
+        inEnd._raw = seg.end; inEnd._undoVal = inEnd.value; inEnd._undoRaw = seg.end;
+      }
       saveBtn.textContent = "Update";
       discardBtn.style.display = "";
       jumpBeginBtn.style.display = "";
@@ -590,14 +619,15 @@
     saveBtn.onclick = () => {
       const s    = inStart._raw ?? (inStart.value.trim() ? parseFmt(inStart.value) : 0);
       const rawE = inEnd._raw   ?? (inEnd.value.trim()   ? parseFmt(inEnd.value)   : null);
-      const e    = (!rawE || rawE <= 0) ? (_cachedDur || liveDur()) : rawE;
-      if (isNaN(s) || isNaN(e) || e <= 0 || e <= s) { showToast("Check start / end times"); return; }
+      const isEnd = (!rawE || rawE <= 0);
+      const e     = isEnd ? (_cachedDur || liveDur() || 0) : rawE;
+      if (isNaN(s) || (!isEnd && (isNaN(e) || e <= s))) { showToast("Check start / end times"); return; }
       const segs = loadSegs();
       if (editIndex !== null) {
-        segs[editIndex] = { type: typeSelect.value, start: s, end: e };
+        segs[editIndex] = { type: typeSelect.value, start: s, end: e, is_end: isEnd };
         showToast("Segment updated");
       } else {
-        segs.push({ type: typeSelect.value, start: s, end: e });
+        segs.push({ type: typeSelect.value, start: s, end: e, is_end: isEnd });
         showToast("Segment saved");
       }
       saveSegs(segs);
@@ -724,7 +754,8 @@
         };
 
         const timeSpan = document.createElement("span");
-        timeSpan.textContent = fmt(seg.start) + " – " + fmt(seg.end);
+        const dispEnd = seg.is_end ? "END" : fmt(seg.end);
+        timeSpan.textContent = fmt(seg.start) + " – " + dispEnd;
         css(timeSpan, {
           flex: "1", fontSize: "13px", color: "#adb5bd", fontWeight: "bold",
           whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
@@ -909,10 +940,42 @@
     ioRow.append(exportBtn, importBtn);
     body.appendChild(ioRow);
 
+    const bottomRow = document.createElement("div");
+    css(bottomRow, { display: "flex", gap: "4px", marginTop: "4px" });
+
+    const autoBtn = document.createElement("button");
+    autoBtn.textContent = "Auto";
+    css(autoBtn, {
+      flex: "1", padding: "5px", background: "#9b5de5", color: "#fff",
+      border: "none", borderRadius: "4px", cursor: "pointer",
+      fontWeight: "bold", fontSize: "13px",
+    });
+    autoBtn.onclick = () => {
+      const existing = loadSegs();
+      const existingTypes = new Set(existing.map(s => s.type));
+      if (existingTypes.has("op") && existingTypes.has("ed")) {
+        showToast("Already has OP + ED, skipped"); return;
+      }
+      if (!_autoVariants) _autoVariants = computeAutoVariants();
+      if (!_autoVariants.length) { showToast("No sibling episodes found"); return; }
+      _autoVariantIdx = (_autoVariantIdx + 1) % _autoVariants.length;
+      const variant = _autoVariants[_autoVariantIdx];
+      const toAdd = variant.filter(v => !existingTypes.has(v.type));
+      if (!toAdd.length) { showToast("All types already present"); return; }
+      saveSegs([...existing, ...toAdd.map(v => ({ type: v.type, start: v.start, end: v.end, is_end: !!v.is_end }))]);
+      refreshTimeline(loadSegs(), liveDur());
+      renderList();
+      autoBtn.textContent = "Auto (" + (_autoVariantIdx + 1) + "/" + _autoVariants.length + ")";
+      showToast(
+        "Auto " + (_autoVariantIdx + 1) + "/" + _autoVariants.length + ": " +
+        toAdd.map(v => (TYPES[v.type]?.label || v.type) + " " + fmt(v.start) + "-" + fmt(v.end)).join(", ")
+      );
+    };
+
     const clearAllBtn = document.createElement("button");
     clearAllBtn.textContent = "Clear ALL";
     css(clearAllBtn, {
-      width: "100%", padding: "5px", marginTop: "4px",
+      flex: "1", padding: "5px",
       background: "#6c1f1f", color: "#ffaaaa",
       border: "none", borderRadius: "4px", cursor: "pointer",
       fontSize: "13px", fontWeight: "bold",
@@ -924,7 +987,9 @@
       renderList();
       showToast("All segment data cleared");
     };
-    body.appendChild(clearAllBtn);
+
+    bottomRow.append(autoBtn, clearAllBtn);
+    body.appendChild(bottomRow);
 
     wrap.append(hdr, body);
     document.body.appendChild(wrap);
@@ -991,7 +1056,102 @@
     return { added, skipped };
   }
 
-  function clearAll() { for (const key of GM_listValues()) GM_deleteValue(key); }
+  function getSeriesSlug() {
+    const parts = storeKey().split("/");
+    return parts.length >= 2 ? parts[1] : "";
+  }
+
+  function computeAutoVariants() {
+    const slug = getSeriesSlug();
+    if (!slug) return [];
+    const all = getAllLocal();
+    const curDur = _cachedDur || liveDur();
+
+    // Filter siblings: must share series slug, must not be current episode
+    let siblings = Object.entries(all).filter(([k]) => k !== storeKey() && k.includes(slug));
+
+    // Prefer episodes with similar duration (use max seg.end as proxy)
+    // Allow 15% tolerance; if nothing qualifies fall back to all siblings
+    if (curDur > 0) {
+      const durClose = siblings.filter(([, segs]) => {
+        const known = segs.map(s => s.end).filter(e => e !== -1);
+        if (!known.length) return false;
+        const proxy = Math.max(...known);
+        return Math.abs(proxy - curDur) / curDur < 0.15;
+      });
+      if (durClose.length) siblings = durClose;
+    }
+
+    if (!siblings.length) return [];
+
+    // Group segments by type; weight each by how many episodes share it
+    const byType = {};
+     for (const [, sibSegs] of siblings) {
+      for (const seg of sibSegs) {
+        const sibEnd = (seg.end > 0) ? seg.end : null;
+        if (!sibEnd) continue;
+        if (!byType[seg.type]) byType[seg.type] = [];
+        if (seg.is_end && curDur > 0) {
+          const len = sibEnd - seg.start;   // use sibling's actual stored end, not curDur
+          byType[seg.type].push({ start: curDur - len, end: curDur, is_end: true });
+        } else {
+          byType[seg.type].push({ start: seg.start, end: sibEnd, is_end: false });
+        }
+      }
+    }
+
+    // Cluster by start proximity within 60s, then rank by episode count
+    const THRESH = 60;
+    const typeClusters = {};
+    for (const [type, entries] of Object.entries(byType)) {
+      const clusters = [];
+      for (const entry of entries) {
+        let hit = false;
+        for (const c of clusters) {
+          if (Math.abs(entry.start - c.startSum / c.count) < THRESH) {
+            c.startSum += entry.start; c.endSum += entry.end; c.count++;
+            if (entry.is_end) c.isEnd = true;
+            hit = true; break;
+          }
+        }
+        if (!hit) clusters.push({ startSum: entry.start, endSum: entry.end, count: 1, isEnd: !!entry.is_end });
+      }
+      clusters.sort((a, b) => b.count - a.count);
+      typeClusters[type] = clusters.map(c => ({
+        type,
+        start:  Math.round(c.startSum / c.count * 10) / 10,
+        end:    Math.round(c.endSum   / c.count * 10) / 10,
+        is_end: !!c.isEnd,
+        count:  c.count,
+      }));
+    }
+
+    // Base variant = most popular cluster per type (highest episode count wins)
+    const types = Object.keys(typeClusters);
+    const base = types.map(t => typeClusters[t][0]);
+    const variants = [base];
+
+    // Extra variants = minority clusters (e.g. op at 331 instead of 0)
+    for (const type of types) {
+      for (let i = 1; i < typeClusters[type].length; i++) {
+        variants.push(base.map(seg => seg.type === type ? typeClusters[type][i] : seg));
+      }
+    }
+    // Sort variants so the one whose tail-segment ends are closest to curDur comes first
+    if (curDur > 0) {
+    variants.sort((a, b) => {
+       const score = v => {
+         const tail = v.reduce((best, seg) => {
+           const e = seg.end === -1 ? curDur : seg.end;
+           return e > best ? e : best;
+         }, 0);
+         return Math.abs(tail - curDur);
+       };
+      return score(a) - score(b);
+    });
+  }
+  return variants;
+  }
 
   function download(filename, data) {
     const blob = new Blob([data], { type: "application/json" });
@@ -1041,7 +1201,9 @@
 
     function getMergedSkipSegs(segs) {
       if (_mergedCache) return _mergedCache;
+      const dur = _cachedDur || liveDur();
       const active = segs
+        .map(s => s.end === -1 ? { ...s, end: dur || 999999 } : s)
         .filter(s => skipTypes[s.type] ?? true)
         .sort((a, b) => a.start - b.start);
       const merged = [];
@@ -1075,8 +1237,9 @@
          const pos = liveGetPos();
          const seg = loadSegs()[editIndex];
          const s = inStart._raw ?? (inStart.value.trim() ? parseFmt(inStart.value) : null);
-         const e = inEnd._raw   ?? (inEnd.value.trim()   ? parseFmt(inEnd.value)   : null);
-         if (pos !== null && s !== null && !isNaN(s) && e !== null && !isNaN(e)) {
+         const rawE = inEnd._raw ?? (inEnd.value.trim() ? parseFmt(inEnd.value) : null);
+         const e = (rawE === -1 || rawE === null) ? (_cachedDur || liveDur() || Infinity) : rawE;
+         if (pos !== null && s !== null && !isNaN(s) && e !== null && !isNaN(e) && e > 0) {
            if (pos >= e || pos < s) {
             const v = document.querySelector("#media-player video, video");
             if (v && !v.paused) {
