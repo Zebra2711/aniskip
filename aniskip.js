@@ -17,7 +17,7 @@
   "use strict";
 
   /* ─── Style helpers ─── */
-  function css(el, props) { Object.assign(el.style, props); return el; }
+  function css(el, props) { ObjecSt.assign(el.style, props); return el; }
   const S = {
     input:   { background: "#0f3460", color: "#e0e0e0", border: "none", borderRadius: "4px",
                fontSize: "13px", fontWeight: "bold" },
@@ -513,6 +513,7 @@
           const ms = Math.round((pos % 1) * 1000);
           inp.value = fmt(pos) + (ms > 0 ? "." + String(ms).padStart(3, "0") : "");
           inp._raw = pos;
+          inp.dispatchEvent(new Event("blur"));
         } else showToast("Player not found");
       };
 
@@ -535,6 +536,68 @@
     attachAutoFormat(inStart);
     attachAutoFormat(inEnd);
     body.append(startRow, endRow);
+
+    let _editLen = 90;
+    const keepLenRow = document.createElement("div");
+    css(keepLenRow, { display: "none", alignItems: "center", gap: "4px", marginBottom: "4px" });
+    const keepLenChk = document.createElement("input");
+    keepLenChk.type = "checkbox";
+    keepLenChk.checked = true;
+    css(keepLenChk, { margin: "0", accentColor: "#f9c74f" });
+    keepLenChk.addEventListener("change", () => {
+      keepLenInp.style.display = keepLenChk.checked ? "" : "none";
+    });
+    const keepLenLbl = document.createElement("span");
+    css(keepLenLbl, { ...S.label, marginBottom: "0", color: "#f9c74f" });
+    keepLenLbl.textContent = "Keep len";
+
+    const keepLenInp = document.createElement("input");
+    keepLenInp.type = "text"; keepLenInp.placeholder = "0:00.000"; keepLenInp.value = "1:30";
+    css(keepLenInp, { ...S.input, width: "52px", padding: "2px 4px", height: "22px", fontSize: "12px", marginBottom: "0", marginLeft: "auto", textAlign: "right" });
+    keepLenInp.addEventListener("blur", () => {
+      const v = parseFmt(keepLenInp.value);
+      if (!isNaN(v) && v > 0) {
+        _editLen = v;
+        const ms = Math.round((v % 1) * 1000);
+        keepLenInp.value = fmt(v) + (ms > 0 ? "." + String(ms).padStart(3, "0") : "");
+        if (keepLenChk.checked) {
+          const s = inStart._raw ?? (inStart.value.trim() ? parseFmt(inStart.value) : 0);
+          const anchor = isNaN(s) ? 0 : (s ?? 0);
+          const dur = _cachedDur || liveDur() || 0;
+          let newEnd = anchor + _editLen;
+          if (dur > 0 && newEnd > dur) { newEnd = dur; }
+          inEnd._raw = newEnd;
+          const msE = Math.round((newEnd % 1) * 1000);
+          inEnd.value = fmt(newEnd) + (msE > 0 ? "." + String(msE).padStart(3, "0") : "");
+        }
+      } else keepLenInp.value = _editLen > 0 ? fmt(_editLen) : "";
+    });
+    keepLenInp.addEventListener("keydown", e => { if (e.key === "Enter") keepLenInp.blur(); });
+    attachAutoFormat(keepLenInp);
+    keepLenRow.append(keepLenChk, keepLenLbl, keepLenInp);
+    body.appendChild(keepLenRow);
+    inStart.addEventListener("blur", () => {
+      if (!keepLenChk.checked || !_editLen) return;
+      const s = inStart._raw ?? (inStart.value.trim() ? parseFmt(inStart.value) : null);
+      if (isNaN(s)) return;
+      const sVal = s ?? 0;
+      if (sVal === (inStart._undoRaw ?? 0)) return;
+      const newEnd = sVal + _editLen;
+      inEnd._raw = newEnd;
+      const msE = Math.round((newEnd % 1) * 1000);
+      inEnd.value = fmt(newEnd) + (msE > 0 ? "." + String(msE).padStart(3, "0") : "");
+    });
+    inEnd.addEventListener("blur", () => {
+      if (!keepLenChk.checked || !_editLen) return;
+      const rawE = inEnd._raw ?? (inEnd.value.trim() ? parseFmt(inEnd.value) : null);
+      const eVal = (rawE === null || rawE <= 0) ? (_cachedDur || liveDur() || 0) : rawE;
+      if (isNaN(eVal)) return;
+      if (eVal === (inEnd._undoRaw ?? (_cachedDur || liveDur() || 0))) return;
+      const newStart = Math.max(0, eVal - _editLen);
+      inStart._raw = newStart;
+      const msS = Math.round((newStart % 1) * 1000);
+      inStart.value = fmt(newStart) + (msS > 0 ? "." + String(msS).padStart(3, "0") : "");
+    });
 
     const saveBtnRow = document.createElement("div");
     css(saveBtnRow, { display: "flex", gap: "4px", marginBottom: "6px" });
@@ -590,6 +653,10 @@
       discardBtn.style.display = "none";
       jumpBeginBtn.style.display = "none";
       jumpEndBtn.style.display = "none";
+      keepLenRow.style.display = "none";
+      keepLenChk.checked = false;
+      keepLenInp.value = "";
+      _editLen = 0;
     }
 
     function startEditSegment(i) {
@@ -603,15 +670,21 @@
       inStart._raw = seg.start; inStart._undoVal = inStart.value; inStart._undoRaw = seg.start;
       if (seg.is_end) {
         inEnd.value = ""; inEnd._raw = -1; inEnd._undoVal = ""; inEnd._undoRaw = -1;
+        _editLen = (_cachedDur || liveDur() || 0) - seg.start;
       } else {
         const msE = Math.round((seg.end % 1) * 1000);
         inEnd.value = fmt(seg.end) + (msE > 0 ? "." + String(msE).padStart(3, "0") : "");
         inEnd._raw = seg.end; inEnd._undoVal = inEnd.value; inEnd._undoRaw = seg.end;
+        _editLen = seg.end - seg.start;
       }
       saveBtn.textContent = "Update";
       discardBtn.style.display = "";
       jumpBeginBtn.style.display = "";
       jumpEndBtn.style.display = "";
+      keepLenRow.style.display = "flex";
+      keepLenChk.checked = true;
+      const _ms = Math.round((_editLen % 1) * 1000);
+      keepLenInp.value = _editLen > 0 ? fmt(_editLen) + (_ms > 0 ? "." + String(_ms).padStart(3, "0") : "") : "";
       body.scrollTop = 0;
       renderList();
     }
@@ -1068,7 +1141,63 @@
     const curDur = _cachedDur || liveDur();
 
     // Filter siblings: must share series slug, must not be current episode
+    // Levenshtein — two-row space-optimised DP (same as Myers diff core, used in git/IDEs)
+    function levenshtein(a, b) {
+      const m = a.length, n = b.length;
+      if (m < n) return levenshtein(b, a);
+      let prev = Array.from({ length: n + 1 }, (_, i) => i);
+      for (let i = 1; i <= m; i++) {
+        const curr = [i];
+        for (let j = 1; j <= n; j++) {
+          const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+          curr[j] = Math.min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
+        }
+        prev = curr;
+      }
+      return prev[n];
+    }
+
+    function nameSim(a, b) {
+      const d = levenshtein(a, b);
+      return 1 - d / Math.max(a.length, b.length, 1);
+    }
+
+    // Strip trailing numeric ID suffix like -a5073 or -111340 before comparing series names
+    function stripId(s) { return s.replace(/-[a-z]?\d{3,}$/i, "").replace(/-+$/, ""); }
+
+    function seriesSlugOf(k) { return k.split("/")[0] || ""; }
+
+    // Filter siblings: must share series slug, must not be current episode
     let siblings = Object.entries(all).filter(([k]) => k !== storeKey() && k.includes(slug));
+
+    // Fallback: if no same-series siblings, find other series by name similarity
+    // e.g. "sousou-no-frieren-i2-a5073" matches "sousou-no-frieren-2nd-season-a5448"
+    if (!siblings.length) {
+      const curSeriesName = stripId(slug);
+      const allSeries = [...new Set(Object.keys(all).map(seriesSlugOf))].filter(s => s !== slug);
+      // Rank each foreign series by name similarity to current
+      const ranked = allSeries
+        .map(s => ({ s, sim: nameSim(stripId(s), curSeriesName) }))
+        .filter(x => x.sim > 0.3)                           // minimum similarity threshold
+        .sort((a, b) => b.sim - a.sim);
+      if (ranked.length) {
+        // Use the single best-matching series only to avoid mixing unrelated shows
+        const bestSlug = ranked[0].s;
+        siblings = Object.entries(all).filter(([k]) => seriesSlugOf(k) === bestSlug);
+      }
+    }
+
+    // Within siblings, sort by episode-name closeness to current episode
+    const curEpName = storeKey().split("/").pop() || "";
+    siblings.sort((a, b) => nameSim(b[0].split("/").pop() || "", curEpName)
+                          - nameSim(a[0].split("/").pop() || "", curEpName));
+
+    // Detect noisy episode keys: first ep (tap-01-) and finale (tap-NNend-)
+    // These commonly have non-standard OP/ED timing — reduce their influence
+    function isNoisyEp(k) {
+      const ep = k.split("/").pop() || "";
+      return /tap-01[^0-9]/i.test(ep) || /tap-\d+end/i.test(ep);
+    }
 
     // Prefer episodes with similar duration (use max seg.end as proxy)
     // Allow 15% tolerance; if nothing qualifies fall back to all siblings
@@ -1084,48 +1213,141 @@
 
     if (!siblings.length) return [];
 
-    // Group segments by type; weight each by how many episodes share it
+    // Collect (start, len) per type — normalise is_end and out-of-range ends
+    // Noisy episodes (first/last) are included but duplicated only once regardless
+    // of how many normal episodes exist, capping their statistical weight
+    const noisyKeys = new Set(siblings.filter(([k]) => isNoisyEp(k)).map(([k]) => k));
+    const normalSiblings  = siblings.filter(([k]) => !noisyKeys.has(k));
+    const noisySiblings   = siblings.filter(([k]) =>  noisyKeys.has(k));
+    // Only append noisy eps when we have fewer than 3 normal eps (sparse data)
+    const effectiveSibs = normalSiblings.length >= 3
+      ? normalSiblings
+      : [...normalSiblings, ...noisySiblings];
+
     const byType = {};
-     for (const [, sibSegs] of siblings) {
+    for (const [, sibSegs] of effectiveSibs) {
       for (const seg of sibSegs) {
-        const sibEnd = (seg.end > 0) ? seg.end : null;
+        const sibEnd = seg.end > 0 ? seg.end : null;
         if (!sibEnd) continue;
         if (!byType[seg.type]) byType[seg.type] = [];
+        const len = sibEnd - seg.start;
         if (seg.is_end && curDur > 0) {
-          const len = sibEnd - seg.start;   // use sibling's actual stored end, not curDur
-          byType[seg.type].push({ start: curDur - len, end: curDur, is_end: true });
+          byType[seg.type].push({ start: curDur - len, len, is_end: true });
+        } else if (curDur > 0 && sibEnd > curDur) {
+          byType[seg.type].push({ start: Math.max(0, curDur - len), len, is_end: false });
         } else {
-          byType[seg.type].push({ start: seg.start, end: sibEnd, is_end: false });
+          byType[seg.type].push({ start: seg.start, len, is_end: false });
         }
       }
     }
 
-    // Cluster by start proximity within 60s, then rank by episode count
-    const THRESH = 60;
+    // DBSCAN on start position — order-independent, no greedy bias
+    const EPS = 60, MIN_PTS = 2;
+    function dbscan(entries) {
+      // Trick 1: sort by start so neighbor scan is O(n) sliding window, not O(n²)
+      const pts = [...entries].sort((a, b) => a.start - b.start);
+      const n = pts.length;
+      const label = new Int32Array(n).fill(-1); // -1 unvisited, 0 noise, >0 cluster
+
+      function neighbors(idx) {
+        const out = [idx];
+        for (let j = idx - 1; j >= 0 && pts[idx].start - pts[j].start <= EPS; j--) out.push(j);
+        for (let j = idx + 1; j < n  && pts[j].start - pts[idx].start <= EPS; j++) out.push(j);
+        return out;
+      }
+
+      // Trick 2: proper core-point expansion — only dense points seed clusters,
+      // border points get absorbed, true outliers become noise
+      let cid = 0;
+      for (let i = 0; i < n; i++) {
+        if (label[i] !== -1) continue;
+        const nbrs = neighbors(i);
+        if (nbrs.length < MIN_PTS) { label[i] = 0; continue; } // mark noise for now
+        cid++;
+        label[i] = cid;
+        const queue = nbrs.filter(j => j !== i);
+        while (queue.length) {
+          const j = queue.pop();
+          if (label[j] === 0) { label[j] = cid; continue; } // absorb border point
+          if (label[j] !== -1) continue;
+          label[j] = cid;
+          const jn = neighbors(j);
+          if (jn.length >= MIN_PTS) jn.forEach(k => { if (label[k] <= 0) queue.push(k); });
+        }
+      }
+
+      const groups = {};
+      for (let i = 0; i < n; i++) {
+        const g = label[i];
+        if (g > 0) { if (!groups[g]) groups[g] = []; groups[g].push(pts[i]); }
+      }
+
+      // Trick 3: re-admit noise singletons when data is sparse so we never
+      // silently discard the only evidence of a segment type
+      const clusters = Object.values(groups);
+      if (clusters.length === 0 || n <= 3) {
+        for (let i = 0; i < n; i++) {
+          if (label[i] <= 0) clusters.push([pts[i]]);
+        }
+      }
+      return clusters;
+    }
+
+    function median(arr) {
+      const s = [...arr].sort((a, b) => a - b);
+      const m = s.length >> 1;
+      return s.length & 1 ? s[m] : (s[m - 1] + s[m]) / 2;
+    }
+
+    // Welford's single-pass mean+variance — numerically stable (used in Chromium, LLVM)
+    function welford(arr) {
+      let n = 0, mean = 0, M2 = 0;
+      for (const x of arr) {
+        n++;
+        const delta = x - mean;
+        mean += delta / n;
+        M2 += delta * (x - mean);
+      }
+      return { mean, variance: n > 1 ? M2 / (n - 1) : 0 };
+    }
+
+    // Adaptive blend: CV small → trust mean (tight data); CV large → trust median (noisy data)
+    // alpha = exp(-CV * 15): CV<0.05 → alpha≈1 (pure mean), CV>0.3 → alpha≈0 (pure median)
+    // Same decay shape used in Google/Netflix latency percentile estimators
+    function adaptiveEstimate(arr) {
+      if (arr.length === 1) return arr[0];
+      const med = median(arr);
+      const { mean, variance } = welford(arr);
+      const cv = mean > 0 ? Math.sqrt(variance) / mean : 1;
+      const alpha = Math.exp(-cv * 15);
+      return alpha * mean + (1 - alpha) * med;
+    }
+
     const typeClusters = {};
     for (const [type, entries] of Object.entries(byType)) {
-      const clusters = [];
-      for (const entry of entries) {
-        let hit = false;
-        for (const c of clusters) {
-          if (Math.abs(entry.start - c.startSum / c.count) < THRESH) {
-            c.startSum += entry.start; c.endSum += entry.end; c.count++;
-            if (entry.is_end) c.isEnd = true;
-            hit = true; break;
-          }
-        }
-        if (!hit) clusters.push({ startSum: entry.start, endSum: entry.end, count: 1, isEnd: !!entry.is_end });
-      }
-      clusters.sort((a, b) => b.count - a.count);
-      typeClusters[type] = clusters.map(c => ({
-        type,
-        start:  Math.round(c.startSum / c.count * 10) / 10,
-        end:    Math.round(c.endSum   / c.count * 10) / 10,
-        is_end: !!c.isEnd,
-        count:  c.count,
-      }));
+      const clusters = dbscan(entries).map(g => {
+        const starts = g.map(e => e.start);
+        const lens   = g.map(e => e.len);
+        const estStart = adaptiveEstimate(starts);
+        const estLen   = adaptiveEstimate(lens);
+        // Confidence = count / (1 + CV_len): more episodes + tighter spread = higher rank
+        // Mirrors inverse-variance weighting from statistical meta-analysis
+        const { mean: mLen, variance: vLen } = welford(lens);
+        const cvLen = mLen > 0 ? Math.sqrt(vLen) / mLen : 1;
+        const confidence = g.length / (1 + cvLen);
+        return {
+          type,
+          start:      Math.round(estStart * 10) / 10,
+          end:        Math.round((estStart + estLen) * 10) / 10,
+          is_end:     g.some(e => e.is_end),
+          count:      g.length,
+          confidence,
+        };
+      });
+      // Sort by confidence instead of raw count
+      clusters.sort((a, b) => b.confidence - a.confidence);
+      typeClusters[type] = clusters;
     }
-
     // Base variant = most popular cluster per type (highest episode count wins)
     const types = Object.keys(typeClusters);
     const base = types.map(t => typeClusters[t][0]);
@@ -1136,6 +1358,16 @@
       for (let i = 1; i < typeClusters[type].length; i++) {
         variants.push(base.map(seg => seg.type === type ? typeClusters[type][i] : seg));
       }
+    }
+    // Clamp any segment whose end exceeds curDur — shift whole segment back
+    if (curDur > 0) {
+      variants.forEach(v => v.forEach(seg => {
+        if (seg.end > curDur) {
+          const len = seg.end - seg.start;
+          seg.start = Math.round(Math.max(0, curDur - len) * 10) / 10;
+          seg.end   = curDur;
+        }
+      }));
     }
     // Sort variants so the one whose tail-segment ends are closest to curDur comes first
     if (curDur > 0) {
