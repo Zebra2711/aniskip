@@ -209,7 +209,8 @@
   let _autoVariants = null;
   let inStart = null;
   let inEnd = null;
-
+  let collapsed = true;
+  let is_prevEdit = false
 
   function invalidateMergedCache() { _mergedCache = null; }
 
@@ -411,7 +412,6 @@
         if (p && typeof p.pause === "function") p.pause(); else if (v) v.pause();
       }
     };
-    let collapsed = true;
     setInterval(() => {
       if (collapsed) return;
       const pos = liveGetPos();
@@ -709,6 +709,7 @@
         showToast("Segment saved");
       }
       saveSegs(segs);
+      is_prevEdit = true;
       resetForm();
       refreshTimeline(_segsCache ?? loadSegs(), _cachedDur || liveDur());
       renderList();
@@ -735,7 +736,16 @@
       const chkLabel = document.createElement("span");
       chkLabel.textContent = v.label;
       lblWrap.append(chk, chkLabel);
-      chk.onchange = () => { skipTypes[k] = chk.checked; saveSkipTypes(skipTypes); invalidateMergedCache(); };
+      chk.dataset.key = k;
+      const typesRef = skipTypes;
+      const saveFn   = saveSkipTypes;
+      chk.onchange = function () {
+         const key = this.dataset.key;
+         typesRef[key] = this.checked;
+         saveFn(typesRef);
+         invalidateMergedCache();
+      };
+      //chk.onchange = () => { skipTypes[k] = chk.checked; saveSkipTypes(skipTypes); invalidateMergedCache(); };
       typesFlex.appendChild(lblWrap);
     }
     body.appendChild(typesFlex);
@@ -1606,47 +1616,70 @@
     }
 
     setInterval(() => {
-       if (editIndex !== null) {
-         if (lockSeg) {
-           const pos = liveGetPos();
-           const seg = (_segsCache ?? loadSegs())[editIndex];
-           const s = inStart._raw ?? (inStart.value.trim() ? parseFmt(inStart.value) : null);
-           const rawE = inEnd._raw ?? (inEnd.value.trim() ? parseFmt(inEnd.value) : null);
-           const e = (rawE === -1 || rawE === null) ? (_cachedDur || liveDur() || Infinity) : rawE;
-           if (pos !== null && s !== null && !isNaN(s) && e !== null && !isNaN(e) && e > 0) {
-             if (pos >= e || pos < s) {
+      if (Date.now() - lastSkip < SKIP_COOL) return;
+      if (editIndex !== null) {
+        if (lockSeg) {
+          const pos = liveGetPos();
+          const seg = (_segsCache ?? loadSegs())[editIndex];
+          const s = inStart._raw ?? (inStart.value.trim() ? parseFmt(inStart.value) : null);
+          const rawE = inEnd._raw ?? (inEnd.value.trim() ? parseFmt(inEnd.value) : null);
+          let e = (rawE === -1 || rawE === null) ? (_cachedDur || liveDur() || Infinity) : rawE;
+          //showToast("p: "+Math.ceil(pos)+" E:"+e + " e - delta = " + Math.floor(e - delta) );
+          if (pos !== null && s !== null && !isNaN(s) && e !== null && !isNaN(e) && e > 0) {
+            if (seg.is_end) {
+              // Guard that allow it not jumb to next ep (0.5 < gaps(new_e;pos) < 1.0)
+              // NOTE: Make suremax timeout < 500 (safe)
+              const e_floor = Math.floor(e);
+              e = Math.round(e) > e ? e_floor : e_floor - 0.6;
+            }
+            if ( pos >= e || pos < s) {
               const v = document.querySelector("#media-player video, video");
               if (v && !v.paused) {
                 v.currentTime = s;
               }
-             }
-           }
-         }
-         return;
-      }
-      if (Date.now() - lastSkip < SKIP_COOL) return;
-      const pos = liveGetPos();
-      if ((pos === null || pos === 0) && autoplay && editIndex === null) {
-        const v = document.querySelector("#media-player video, video");
-        if (v) { v.currentTime = 0; if (v.paused) v.play().catch(() => {}); }
-        // if (_cachedDur > 0)
-        //   showToast("Autoplay");
-        const _segs  = _segsCache ?? loadSegs();
-        const merged = getMergedSkipSegs(_segs);
-        const startSeg = merged.find(seg => seg.start === 0);
-        liveSeekTo(startSeg ? startSeg.end : 0);
+            }
+          }
+        }
         return;
       }
-      if (pos === null || pos === 0) return;
+      const pos = liveGetPos();
+      if (pos === null || pos === 0 ) {
+        if (autoplay && editIndex === null || is_prevEdit) {
+          const v = document.querySelector("#media-player video, video");
+          if (v) { v.currentTime = 0; if (v.paused) v.play().catch(() => {}); }
+          // if (_cachedDur > 0)
+          //   showToast("Autoplay");
+          const _segs  = _segsCache ?? loadSegs();
+          const merged = getMergedSkipSegs(_segs);
+          const startSeg = merged.find(seg => seg.start === 0);
+          liveSeekTo(startSeg ? startSeg.end : 0);
+          if (is_prevEdit){
+            liveSeekTo(startSeg.end,false);
+            is_prevEdit = false;
+          }
+        }
+        return;
+      }
       const _segs = _segsCache ?? loadSegs();
       const merged = getMergedSkipSegs(_segs);
       const hit      = bsearchSeg(merged, pos);
-      const hitIndex = hit ? _segs.findIndex(s => s.start === hit.start && s.end === hit.end) : -1;
-      if (hit && hitIndex !== editIndex) {
+      if (!hit) return;
+      const hitIndex = _segs.findIndex(s => s.start === hit.start && s.end === hit.end);
+      if (hitIndex !== editIndex) {
+        //if (is_prevEdit && _segs[hitIndex]?.is_end){
+        if (is_prevEdit){
+          liveSeekTo(hit.end,false);
+          return;
+        }
         lastSkip = Date.now();
+        if (_segs[hitIndex]?.is_end) {
+          liveSeekTo(99999999);
+          return;
+        }
         liveSeekTo(hit.end);
         showToast("Skipped " + hit.labels.join(" + "));
       }
+      is_prevEdit = false;
     }, 250);
 
     detectPlayer((jwp, videoEl) => {
