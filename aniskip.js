@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         AniSkip
-// @namespace    https://github.com/zebra2711/aniskip
+// @namespace    https://github.com/An1sora/Aniskip
 // @version      0.1
 // @description  Skip OP, ED, recaps, and filler on AnimeVietSub
 // @match        *://animevietsub.mx/phim/*/*.html
@@ -8,6 +8,7 @@
 // @grant        GM_getValue
 // @grant        GM_deleteValue
 // @grant        GM_listValues
+// @grant        GM_xmlhttpRequest
 // @connect      raw.githubusercontent.com
 // @connect      *
 // @run-at       document-idle
@@ -28,7 +29,8 @@
     label:   { color: "#adb5bd", fontSize: "12px", fontWeight: "bold", marginBottom: "4px" },
     divider: { borderTop: "1px solid #2a2a4a", marginBottom: "6px" },
   };
-
+  //uinput send
+  function send(cmd) { GM_xmlhttpRequest({ method: "GET", url: "http://127.0.0.1:8765/" + cmd }); }
   /* ─── Storage ─── */
   let _storeKey = null;
   function storeKey() {
@@ -164,6 +166,7 @@
     }
     const v = document.querySelector("#media-player video, video");
     if (v) {
+      // v.playbackRate = 1.25; // for testing only, speed = 1 is fcking slow :>
       const wasPaused = v.paused;
       v.currentTime = t;
       if (play && wasPaused) v.play().catch(() => {});
@@ -194,13 +197,27 @@
       }
     }, 500);
   }
-
+  const isLinux = navigator.userAgent.toLowerCase().includes("linux");
   const SKIP_COOL = 3000;
+  const TESTING = false;
   let lastSkip = -Infinity;
   let tlContainer = null;
   let updateHdrStats = () => {};
   let autoplay = GM_getValue("autoplay", false);
   let lockSeg = GM_getValue("lock_seg", false);
+  let _wasFullscreen = false;
+
+  if (!isLinux && typeof GM_xmlhttpRequest !== "undefined") {
+    GM_xmlhttpRequest = function () {
+      console.warn("GM_xmlhttpRequest blocked");
+      return null;
+    };
+  }
+
+  const updateFSState = () => { _wasFullscreen = !!(document.fullscreenElement || document.webkitFullscreenElement); };
+  document.addEventListener("fullscreenchange", updateFSState);
+  document.addEventListener("webkitfullscreenchange", updateFSState);
+  window.addEventListener("beforeunload", () => GM_setValue("restore_fs", _wasFullscreen ? "1" : "0"));
   let _cachedJwp = null;
   let _cachedDur = 0;
   let _mergedCache = null;
@@ -212,6 +229,33 @@
   let collapsed = true;
   let is_prevEdit = false
   let is_theend = false;
+  function rawVideo() {
+    const v = document.querySelector("#media-player video, video");
+    if (!v) return;
+    if (v.requestFullscreen) v.requestFullscreen();
+    else if (v.webkitRequestFullscreen) v.webkitRequestFullscreen();
+    else if (v.mozRequestFullScreen) v.mozRequestFullScreen();
+    else if (v.msRequestFullscreen) v.msRequestFullscreen();
+  }
+
+  function init(a) {
+    if (!a) return;
+    let p = JWP_Fs;
+    if (a === 1)
+       p = rawVideo;
+    document.addEventListener("click", p, { once: true });
+    document.addEventListener("keydown", p, { once: true });
+  }
+
+  function JWP_Fs() {
+    const player = document.querySelector(".jwplayer"); // JW Player container
+    const video = document.querySelector("video");
+    if (!player || !video) return;
+    if (player.requestFullscreen) player.requestFullscreen();
+    else if (player.webkitRequestFullscreen) player.webkitRequestFullscreen();
+    else if (player.mozRequestFullScreen) player.mozRequestFullScreen();
+    else if (player.msRequestFullscreen) player.msRequestFullscreen();
+  }
 
   function invalidateMergedCache() { _mergedCache = null; }
 
@@ -1577,6 +1621,27 @@
     skipTypes = loadSkipTypes();
     buildWidget();
 
+    if (GM_getValue("restore_fs", "0") === "1" && autoplay && isLinux && TESTING) {
+      GM_setValue("restore_fs", "0");
+      const tryFs = (tries = 0) => {
+        if (document.fullscreenElement) return;
+
+        const player = document.querySelector("#media-player");
+        if (!player) {
+          if (tries < 25) setTimeout(() => tryFs(tries + 1), 400);
+          return;
+        }
+
+        if (document.querySelector("#media-player .jw-icon-fullscreen:not(.jw-fullscreen-ima)")) {
+          init(2);
+          send("fullscreen");
+          //send("click");
+        }
+      };
+      setTimeout(() => tryFs(), 1700);
+    }
+
+
     let idleTimer = null, isHovering = false;
     const TIMEOUT = 15000; // 15s
     const widget = document.getElementById("avs-widget");
@@ -1678,6 +1743,10 @@
           const merged = getMergedSkipSegs(_segs);
           const startSeg = merged.find(seg => seg.start === 0);
           liveSeekTo(startSeg ? startSeg.end : 0);
+          //v.playbackRate = 2;
+          //send("fullscreen");
+          //init();
+          if (TESTING && _wasFullscreen) GM_setValue("restore_fs", "1");
           if (is_prevEdit){
             liveSeekTo(startSeg.end,false);
             is_prevEdit = false;
