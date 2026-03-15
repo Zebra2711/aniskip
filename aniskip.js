@@ -1597,7 +1597,7 @@
         }, TIMEOUT);
     };
     widget.addEventListener('pointerenter', () => { isHovering = true; clearTimeout(idleTimer); }, {passive:true});
-    widget.addEventListener('pointerleave', () => { isHovering = false; reset(); }, {passive:true});
+    widget.addEventListener('pointerleave', () => { isHovering = false; widgetIdle(); }, {passive:true});
     widgetIdle(); // start idle
 
     _cachedDur = liveDur(); updateHdrStats();
