@@ -1576,6 +1576,30 @@
   waitForBody(() => {
     skipTypes = loadSkipTypes();
     buildWidget();
+
+    let idleTimer = null, isHovering = false;
+    const TIMEOUT = 15000; // 15s
+    const widget = document.getElementById("avs-widget");
+    if (!widget) return;
+    const header = widget.firstElementChild,
+          bodyDiv = header?.nextElementSibling,
+          collapseBtnEl = header.querySelector('span[style*="cursor: pointer"]');
+    const widgetIdle = () => {
+        if (collapsed) return;
+        clearTimeout(idleTimer);
+        if (isHovering) return;
+        idleTimer = setTimeout(() => {
+            if (bodyDiv?.style.display !== "none") {
+                bodyDiv.style.display = "none";
+                collapseBtnEl && (collapseBtnEl.textContent = "+");
+                collapsed = true;
+            }
+        }, TIMEOUT);
+    };
+    widget.addEventListener('pointerenter', () => { isHovering = true; clearTimeout(idleTimer); }, {passive:true});
+    widget.addEventListener('pointerleave', () => { isHovering = false; reset(); }, {passive:true});
+    widgetIdle(); // start idle
+
     _cachedDur = liveDur(); updateHdrStats();
     setInterval(() => {
       if (!_cachedDur) _cachedDur = liveDur();
