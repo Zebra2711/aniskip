@@ -211,6 +211,7 @@
   let inEnd = null;
   let collapsed = true;
   let is_prevEdit = false
+  let is_theend = false;
 
   function invalidateMergedCache() { _mergedCache = null; }
 
@@ -1673,7 +1674,16 @@
         }
         lastSkip = Date.now();
         if (_segs[hitIndex]?.is_end) {
-          liveSeekTo(99999999);
+          if (autoplay && !is_theend) {
+            document.getElementById("btn-nextepisode")?.click();
+            setTimeout(() => {
+              const el = document.querySelector(".notiny-text");
+              if (el && el.textContent.trim() === "Phim này đã hết tập để play!")
+                is_theend = true;
+            },300);
+          }
+          else
+            liveSeekTo(99999999);
           return;
         }
         liveSeekTo(hit.end);
