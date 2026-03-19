@@ -16,7 +16,7 @@
 
 (function () {
   "use strict";
-
+  let DEBUG = false;
   /* ─── Style helpers ─── */
   function css(el, props) { Object.assign(el.style, props); return el; }
   const S = {
@@ -34,8 +34,30 @@
   /* ─── Storage ─── */
   let _storeKey = null;
   function storeKey() {
+    if (!_storeKey && DEBUG) console.log("[AniSkip] storeKey is null -> getkey");
+    else if (!_ok && DEBUG) {console.log("[AniSkip] storeKey is \"%s\"",_storeKey); _ok=true;}
     return _storeKey || (_storeKey = location.pathname.replace(/^\//, ""));
   }
+  let _lastPathname = location.pathname;
+  function _onNavChange() {
+    if (location.pathname === _lastPathname) return;
+    _lastPathname = location.pathname;
+    _storeKey = null;
+    _segsCache = null;
+    _segsCacheKey = null;
+    invalidateMergedCache();
+    const rl = document.getElementById("avs-widget")?._renderList;
+    if (rl) rl();
+  }
+  window.addEventListener("popstate", _onNavChange);
+  // Fallback: poll pathname only when popstate doesn't fire (pushState SPA)
+  let _navPollLast = 0;
+  (function navPoll(ts) {
+    requestAnimationFrame(navPoll);
+    if (ts - _navPollLast < 500) return;
+    _navPollLast = ts;
+    _onNavChange();
+  })(0);
 
   function loadSkipTypes() {
     const defaults = { op: true, ed: true, recap: true, preview: true, filler: true, ad: true };
@@ -49,11 +71,20 @@
   function saveSkipTypes(st) { GM_setValue("skip_types", JSON.stringify(st)); }
   let skipTypes = {};
 
+  let _ok = false;
   let _segsCache = null;
   let _segsCacheKey = null;
   function loadSegs() {
     const k = storeKey();
-    if (_segsCache !== null && _segsCacheKey === k) return _segsCache;
+    if (_segsCache !== null && _segsCacheKey === k) {
+      if (DEBUG) console.log("[AniSkip] segCahe is OK -> \"" + _segsCache +"\"");
+      return _segsCache;
+    }
+    if (DEBUG) {
+      const raw = GM_getValue(k, "[]");
+      console.log("[AniSkip] loadSegs raw=%s", raw);
+      console.log("[AniSkip] loadSegs key=%s", k);
+    }
     try { _segsCache = JSON.parse(GM_getValue(k, "[]")) || []; } catch (_) { _segsCache = []; }
     _segsCacheKey = k;
     return _segsCache;
@@ -148,7 +179,7 @@
   function liveGetPos() {
     const p = getJwp();
     if (p) { const pos = p.getPosition(); return typeof pos === "number" ? pos : 0; }
-    const v = document.querySelector("#media-player video, video");
+    const v = getVideo();
     return v ? (v.currentTime || 0) : null;
   }
 
@@ -164,9 +195,10 @@
       }, 0);
       return true;
     }
-    const v = document.querySelector("#media-player video, video");
+    const v = getVideo();
     if (v) {
-      // v.playbackRate = 1.25; // for testing only, speed = 1 is fcking slow :>
+      // v.playbackRate = 1.09; // for testing only, speed = 1 is fcking slow :>
+      v.playbackRate = _savedSpeed;
       const wasPaused = v.paused;
       v.currentTime = t;
       if (play && wasPaused) v.play().catch(() => {});
@@ -186,8 +218,19 @@
         if (p && typeof p.on === "function") {
           found = true; clearInterval(id);
           const state = typeof p.getState === "function" ? p.getState() : "";
+          if  (DEBUG) console.log("[AniSkip] detectPlayer found JWP state=%s dur=%s", state, typeof p.getDuration === "function" ? p.getDuration() : "?");
           if (state && state !== "idle" && state !== "error") cb(p, null);
-          else { p.on("ready", () => cb(p, null)); p.on("firstFrame", () => cb(p, null)); }
+          else {
+            p.on("ready", () => {
+              if (DEBUG) console.log("[AniSkip] JWP ready");
+              cb(p, null);
+            });
+            p.on("firstFrame", () => {
+              if (DEBUG) console.log("[AniSkip] JWP firstFrame");
+              cb(p, null);
+            });
+          }
+          //else { p.on("ready", () => cb(p, null)); p.on("firstFrame", () => cb(p, null)); }
           return;
         }
       }
@@ -205,6 +248,7 @@
   let updateHdrStats = () => {};
   let autoplay = GM_getValue("autoplay", false);
   let lockSeg = GM_getValue("lock_seg", false);
+  let _savedSpeed = parseFloat(GM_getValue("playback_speed", "1")) || 1;
   let _wasFullscreen = false;
 
   if (!isLinux && typeof GM_xmlhttpRequest !== "undefined") {
@@ -229,8 +273,18 @@
   let collapsed = true;
   let is_prevEdit = false
   let is_theend = false;
+  let _cachedVideo = null;
+
+  const getVideo = () => {
+    if (_cachedVideo && document.contains(_cachedVideo)) {
+      return _cachedVideo;
+    }
+    _cachedVideo = document.querySelector("#media-player video, video");
+    return _cachedVideo;
+  };
+
   function rawVideo() {
-    const v = document.querySelector("#media-player video, video");
+    const v = getVideo();
     if (!v) return;
     if (v.requestFullscreen) v.requestFullscreen();
     else if (v.webkitRequestFullscreen) v.webkitRequestFullscreen();
@@ -272,28 +326,35 @@
     if (_cachedDur) return _cachedDur;
     const p = getJwp();
     if (p && typeof p.getDuration === "function") return p.getDuration() || 0;
-    const v = document.querySelector("#media-player video, video");
+    const v = getVideo();
     return v ? (v.duration || 0) : 0;
   }
 
   function initEngine(jwp, videoEl) {
+    if (DEBUG) console.log("[AniSkip] initEngine jwp=%s videoEl=%s", !!jwp, !!videoEl);
     function onMeta() {
       _cachedDur = liveDur();
-      const migrated = migrateSegsEndSentinel(_segsCache ?? loadSegs(), _cachedDur);
+      if (DEBUG) console.log("[AniSkip] onMeta _cachedDur=%s", _cachedDur);
+      _tlSig = "";
+      const migrated = migrateSegsEndSentinel(loadSegs(), _cachedDur);
       if (migrated !== loadSegs()) saveSegs(migrated);
-      refreshTimeline(_segsCache ?? loadSegs(), _cachedDur);
+      setTimeout(() => refreshTimeline(loadSegs(), _cachedDur || liveDur()), 500);
       updateHdrStats();
     }
     if (jwp) {
       jwp.on("meta", onMeta);
       jwp.on("firstFrame", () => { tlContainer = null; _tlSig = ""; onMeta(); });
       jwp.on("playlistItem", () => { tlContainer = null; _cachedJwp = null; _tlSig = ""; invalidateMergedCache(); _autoVariants = null; _autoVariantIdx = -1; });
+      //const d = typeof jwp.getDuration === "function" ? jwp.getDuration() : 0;
+      //console.log("[AniSkip] initEngine immediate dur=%s", d);
+      //if (d > 0) onMeta();
     }
     if (videoEl) videoEl.addEventListener("loadedmetadata", () => { tlContainer = null; onMeta(); });
   }
 
   let _tlSig = "";
   function refreshTimeline(segs, dur) {
+    if (DEBUG) console.log("[AniSkip] refreshTimeline dur=%s segs=%d container=%s", dur, segs.length, !!document.querySelector(".jw-timesegment-container"));
     if (!dur) return;
     const container = document.querySelector(".jw-timesegment-container");
     let h = (dur * 1000) | 0;
@@ -304,7 +365,7 @@
     const sig = h + "|" + segs.length;
     if (sig === _tlSig && tlContainer && document.contains(tlContainer)) return;
     _tlSig = sig;
-
+    if (DEBUG) console.log("[AniSkip] refreshTimeline: RENDERING %d segs dur=%s", segs.length, dur);
     if (!tlContainer || !document.contains(tlContainer)) {
       tlContainer = null;
       const container = document.querySelector(".jw-timesegment-container");
@@ -389,7 +450,7 @@
 
     updateHdrStats = function () {
       const dur  = _cachedDur;
-      const segs = _segsCache ?? loadSegs();
+      const segs = loadSegs();
       const saved = segs.reduce((acc, s) => acc + (resolveEnd(s, dur) - s.start), 0);
       hdrDur.textContent   = dur > 0   ? fmt(dur - saved) : "";
       hdrSaved.textContent = saved > 0 ? "+ " + fmt(saved) : "";
@@ -449,7 +510,7 @@
     });
     nudgeCurr.onclick = () => {
       const p = getJwp();
-      const v = document.querySelector("#media-player video, video");
+      const v = getVideo();
       const paused = v ? v.paused : false;
       if (paused) {
         if (p && typeof p.play  === "function") p.play();  else if (v) v.play().catch(() => {});
@@ -457,15 +518,18 @@
         if (p && typeof p.pause === "function") p.pause(); else if (v) v.pause();
       }
     };
-    setInterval(() => {
-      if (collapsed) return;
+    let _nudgeLast = 0;
+    (function nudgeLoop(ts) {
+      requestAnimationFrame(nudgeLoop);
+      if (collapsed || ts - _nudgeLast < 250) return;
+      _nudgeLast = ts;
       const pos = liveGetPos();
-      const v = document.querySelector("#media-player video, video");
+      const v = getVideo();
       nudgeCurr.style.color = (v && !v.paused) ? "#06d6a0" : "#e63946";
       if (pos === null) return;
       const ms = String(Math.round((pos % 1) * 1000)).padStart(3, "0");
       nudgeCurr.textContent = fmt(pos) + "." + ms;
-    }, 250);
+    })(0);
 
     /* ── Nudge row 2: step [-] [val] [+] [ms|s] ── */
     const nudgeRow2 = document.createElement("div");
@@ -490,10 +554,13 @@
       const btn = document.createElement("button");
       btn.textContent = label;
       css(btn, S.btn);
+      let _seekRaf = null;
       btn.onclick = () => {
+        if (_seekRaf) return;
+        _seekRaf = requestAnimationFrame(() => { _seekRaf = null; });
         const pos = liveGetPos();
         if (pos === null) { showToast("Player not found"); return; }
-        const v = document.querySelector("#media-player video, video");
+        const v = getVideo();
         const wasPaused = v ? v.paused : false;
         const delta = parseFloat(nudgeVal.value || 5) * (nudgeUnit === "ms" ? 0.001 : 1) * dir;
         liveSeekTo(pos + delta, !wasPaused);
@@ -517,6 +584,75 @@
     nudgeRow1.append(mkSeekBtn("<", -1), nudgeCurr, mkSeekBtn(">", 1));
     body.appendChild(nudgeRow1);
     body.appendChild(nudgeRow2);
+
+    /* ── Nudge row 3: [x{rate}] [E/A] [x1.25] [x2] ── */
+    const nudgeRow3 = document.createElement("div");
+    css(nudgeRow3, { display: "flex", gap: "4px", alignItems: "center", height: "30px", marginTop: "4px" });
+
+    let _speed = _savedSpeed;
+    const setSpeed = (v) => {
+      _speed = v;
+      GM_setValue("playback_speed", String(v));
+      const vid = getVideo();
+      if (vid) vid.playbackRate = v;
+      rateDisplay.textContent = "x" + (v % 1 === 0 ? v : v);
+    };
+
+    const rateDisplay = document.createElement("span");
+    rateDisplay.textContent = "x" + (_savedSpeed % 1 === 0 ? _savedSpeed : _savedSpeed);
+    css(rateDisplay, {
+      background: "#16213e", color: "#00b4d8", border: "1px solid #2a2a4a",
+      borderRadius: "4px", height: "30px", padding: "0 8px", fontWeight: "bold",
+      fontSize: "13px", display: "flex", alignItems: "center", justifyContent: "center",
+      flex: "1", whiteSpace: "nowrap", cursor: "pointer",
+    });
+    rateDisplay.title = "Click to reset speed to x1";
+    rateDisplay.onclick = () => setSpeed(1);
+
+    const rateInput = document.createElement("input");
+    rateInput.type = "number"; rateInput.step = "0.05"; rateInput.min = "0.1"; rateInput.max = "16";
+    rateInput.value = "1";
+    css(rateInput, { ...S.input, flex: "1", textAlign: "center", padding: "4px", height: "30px", outline: "none", marginBottom: "0", display: "none" });
+    rateInput.style.MozAppearance = "textfield";
+
+    const editRateBtn = document.createElement("button");
+    editRateBtn.textContent = "E";
+    css(editRateBtn, { ...S.btn, minWidth: "30px", padding: "0 8px", color: "#f9c74f" });
+
+    let _rateEditing = false;
+    const commitRate = () => {
+      const v = parseFloat(rateInput.value);
+      if (!isNaN(v) && v >= 0.1 && v <= 16) setSpeed(v);
+      rateInput.style.display = "none";
+      rateDisplay.style.display = "";
+      editRateBtn.textContent = "E";
+      _rateEditing = false;
+    };
+    editRateBtn.onclick = () => {
+      if (!_rateEditing) {
+        rateInput.value = _speed;
+        rateDisplay.style.display = "none";
+        rateInput.style.display = "";
+        editRateBtn.textContent = "A";
+        _rateEditing = true;
+        rateInput.focus(); rateInput.select();
+      } else {
+        commitRate();
+      }
+    };
+    rateInput.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); commitRate(); } if (e.key === "Escape") { rateInput.style.display = "none"; rateDisplay.style.display = ""; editRateBtn.textContent = "E"; _rateEditing = false; } });
+    rateInput.addEventListener("blur", () => { if (_rateEditing) commitRate(); });
+
+    const mkSpeedBtn = (label, val) => {
+      const btn = document.createElement("button");
+      btn.textContent = label;
+      css(btn, { ...S.btn, padding: "0 8px", minWidth: "44px" });
+      btn.onclick = () => { setSpeed(val); if (_rateEditing) { rateInput.style.display = "none"; rateDisplay.style.display = ""; editRateBtn.textContent = "E"; _rateEditing = false; } };
+      return btn;
+    };
+
+    nudgeRow3.append(rateDisplay, rateInput, editRateBtn, mkSpeedBtn("x1.25", 1.25), mkSpeedBtn("x2", 2));
+    body.appendChild(nudgeRow3);
 
     const div1 = document.createElement("div");
     css(div1, S.divider);
@@ -554,7 +690,7 @@
       nowBtn.onclick = () => {
         const p = getJwp();
         if (p && typeof p.pause === "function") p.pause();
-        else { const v = document.querySelector("#media-player video, video"); if (v) v.pause(); }
+        else { const v = getVideo(); if (v) v.pause(); }
         const pos = liveGetPos();
         if (pos !== null) {
           const ms = Math.round((pos % 1) * 1000);
@@ -708,7 +844,7 @@
     }
 
     function startEditSegment(i) {
-      const seg = (_segsCache ?? loadSegs())[i];
+      const seg = loadSegs()[i];
       if (!seg) return;
       editIndex = i;
       liveSeekTo(seg.start, false);
@@ -756,7 +892,7 @@
       saveSegs(segs);
       is_prevEdit = true;
       resetForm();
-      refreshTimeline(_segsCache ?? loadSegs(), _cachedDur || liveDur());
+      refreshTimeline(loadSegs(), _cachedDur || liveDur());
       renderList();
     };
 
@@ -832,7 +968,7 @@
 
     function renderList() {
       listEl.innerHTML = "";
-      const segs = _segsCache ?? loadSegs();
+      const segs = loadSegs();
       if (!segs.length) {
         const empty = document.createElement("div");
         empty.textContent = "No segments yet";
@@ -852,7 +988,7 @@
           const s = loadSegs();
           s[i] = { type: newType, start: newStart, end: newEnd };
           saveSegs(s);
-          refreshTimeline(_segsCache ?? loadSegs(), _cachedDur || liveDur());
+          refreshTimeline(loadSegs(), _cachedDur || liveDur());
           renderList();
         }
 
@@ -912,7 +1048,7 @@
           const s = loadSegs();
           s.splice(i, 1);
           saveSegs(s);
-          refreshTimeline(_segsCache ?? loadSegs(), _cachedDur || liveDur());
+          refreshTimeline(loadSegs(), _cachedDur || liveDur());
           renderList();
         };
 
@@ -1100,7 +1236,7 @@
       fontWeight: "bold", fontSize: "13px",
     });
     autoBtn.onclick = () => {
-      const existing = _segsCache ?? loadSegs();
+      const existing = loadSegs();
       const existingTypes = new Set(existing.map(s => s.type));
       if (existingTypes.has("op") && existingTypes.has("ed")) {
         showToast("Already has OP + ED, skipped"); return;
@@ -1112,7 +1248,7 @@
       const toAdd = variant.filter(v => !existingTypes.has(v.type));
       if (!toAdd.length) { showToast("All types already present"); return; }
       saveSegs([...existing, ...toAdd.map(v => ({ type: v.type, start: v.start, end: v.end, is_end: !!v.is_end }))]);
-      refreshTimeline(_segsCache ?? loadSegs(), _cachedDur || liveDur());
+      refreshTimeline(loadSegs(), _cachedDur || liveDur());
       renderList();
       autoBtn.textContent = "Auto (" + (_autoVariantIdx + 1) + "/" + _autoVariants.length + ")";
       showToast(
@@ -1186,10 +1322,11 @@
       document.addEventListener("mouseup", () => document.removeEventListener("mousemove", onMove), { once: true });
     });
 
+    wrap._renderList = renderList;
     return renderList;
   }
 
-  const NON_SEG_KEYS = new Set(["skip_types", "autoplay", "upstream_url", "upstream_snapshot"]);
+  const NON_SEG_KEYS = new Set(["skip_types", "autoplay", "lock_seg", "upstream_url", "upstream_snapshot", "playback_speed"]);
   function getAllLocal() {
     const all = {};
     for (const key of GM_listValues()) {
@@ -1321,13 +1458,14 @@
     // per segment type — same representation used in embedding-based retrieval.
     // Normalise by episode proxy-duration so vectors are scale-invariant.
     const TYPE_KEYS = Object.keys(TYPES); // fixed order = fixed vector dims
+    const TYPE_IDX  = new Map(TYPE_KEYS.map((k, i) => [k, i])); // O(1) lookup
 
     function episodeVector(segs, dur) {
       // proxy dur: max known end, or supplied dur
       const proxy = dur || Math.max(1, ...segs.map(s => s.end > 0 ? s.end : 0));
       const v = new Float64Array(TYPE_KEYS.length * 2); // [start0,len0, start1,len1, ...]
       for (const seg of segs) {
-        const idx = TYPE_KEYS.indexOf(seg.type);
+        const idx = TYPE_IDX.get(seg.type);
         if (idx === -1 || seg.end <= 0) continue;
         const len = seg.end - seg.start;
         v[idx * 2]     = seg.start / proxy;
@@ -1346,8 +1484,8 @@
     // mean embedding of the series — similar to averaged sentence embeddings)
     const sibVecs = effectiveSibs.map(([, segs]) => episodeVector(segs, curDur));
     const centroid = new Float64Array(TYPE_KEYS.length * 2);
-    for (const v of sibVecs) v.forEach((x, i) => { centroid[i] += x; });
-    if (sibVecs.length) centroid.forEach((_, i) => { centroid[i] /= sibVecs.length; });
+    for (const v of sibVecs) { for (let i = 0; i < v.length; i++) centroid[i] += v[i]; }
+    if (sibVecs.length) { const n = sibVecs.length; for (let i = 0; i < centroid.length; i++) centroid[i] /= n; }
 
     // Cosine similarity of each sibling to the centroid → weight
     // Episodes far from the series norm (weird timing) get low weight automatically
@@ -1666,11 +1804,15 @@
     widgetIdle(); // start idle
 
     _cachedDur = liveDur(); updateHdrStats();
-    setInterval(() => {
+    let _tlLast = 0;
+    (function tlLoop(ts) {
+      requestAnimationFrame(tlLoop);
+      if (ts - _tlLast < 200) return;
+      _tlLast = ts;
       if (!_cachedDur) _cachedDur = liveDur();
-      if (_cachedDur > 0) refreshTimeline(_segsCache ?? loadSegs(), _cachedDur);
+      if (_cachedDur > 0) refreshTimeline(loadSegs(), _cachedDur);
       updateHdrStats();
-    }, 1000);
+    })(0);
 
     function getMergedSkipSegs(segs) {
       if (_mergedCache) return _mergedCache;
@@ -1705,12 +1847,16 @@
       return null;
     }
 
-    setInterval(() => {
+    let _skipLast = 0;
+    (function skipLoop(ts) {
+      requestAnimationFrame(skipLoop);
+      if (ts - _skipLast < 250) return;
+      _skipLast = ts;
       if (Date.now() - lastSkip < SKIP_COOL) return;
       if (editIndex !== null) {
         if (lockSeg) {
           const pos = liveGetPos();
-          const seg = (_segsCache ?? loadSegs())[editIndex];
+          const seg = (loadSegs())[editIndex];
           const s = inStart._raw ?? (inStart.value.trim() ? parseFmt(inStart.value) : null);
           const rawE = inEnd._raw ?? (inEnd.value.trim() ? parseFmt(inEnd.value) : null);
           let e = (rawE === -1 || rawE === null) ? (_cachedDur || liveDur() || Infinity) : rawE;
@@ -1723,7 +1869,7 @@
               e = Math.round(e) > e ? e_floor : e_floor - 0.6;
             }
             if ( pos >= e || pos < s) {
-              const v = document.querySelector("#media-player video, video");
+	      const v = getVideo();
               if (v && !v.paused) {
                 v.currentTime = s;
               }
@@ -1735,11 +1881,11 @@
       const pos = liveGetPos();
       if (pos === null || pos === 0 ) {
         if (autoplay && editIndex === null || is_prevEdit) {
-          const v = document.querySelector("#media-player video, video");
+            const v = getVideo();
           if (v) { v.currentTime = 0; if (v.paused) v.play().catch(() => {}); }
           // if (_cachedDur > 0)
           //   showToast("Autoplay");
-          const _segs  = _segsCache ?? loadSegs();
+          const _segs  = loadSegs();
           const merged = getMergedSkipSegs(_segs);
           const startSeg = merged.find(seg => seg.start === 0);
           liveSeekTo(startSeg ? startSeg.end : 0);
@@ -1754,7 +1900,7 @@
         }
         return;
       }
-      const _segs = _segsCache ?? loadSegs();
+      const _segs = loadSegs();
       const merged = getMergedSkipSegs(_segs);
       const hit      = bsearchSeg(merged, pos);
       if (!hit) return;
@@ -1783,13 +1929,14 @@
         showToast("Skipped " + hit.labels.join(" + "));
       }
       is_prevEdit = false;
-    }, 250);
+    })(0);
 
     detectPlayer((jwp, videoEl) => {
       initEngine(jwp, videoEl);
       const inp = document.querySelector("#avs-widget input");
       if (inp) inp.placeholder = "MM:SS";
-      refreshTimeline(_segsCache ?? loadSegs(), _cachedDur || liveDur());
+      refreshTimeline(loadSegs(), _cachedDur || liveDur());
+      if (_savedSpeed !== 1) setSpeed(_savedSpeed);
     });
   });
 })();
