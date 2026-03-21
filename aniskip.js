@@ -1847,20 +1847,13 @@
       return null;
     }
 
-    let _skipLast = 0;
-    (function skipLoop(ts) {
-      requestAnimationFrame(skipLoop);
-      if (ts - _skipLast < 250) return;
-      _skipLast = ts;
-      if (Date.now() - lastSkip < SKIP_COOL) return;
-      if (editIndex !== null) {
-        if (lockSeg) {
+    setInterval(() => {
+        if (editIndex === null || !lockSeg) return;
           const pos = liveGetPos();
           const seg = (loadSegs())[editIndex];
           const s = inStart._raw ?? (inStart.value.trim() ? parseFmt(inStart.value) : null);
           const rawE = inEnd._raw ?? (inEnd.value.trim() ? parseFmt(inEnd.value) : null);
           let e = (rawE === -1 || rawE === null) ? (_cachedDur || liveDur() || Infinity) : rawE;
-          //showToast("p: "+Math.ceil(pos)+" E:"+e + " e - delta = " + Math.floor(e - delta) );
           if (pos !== null && s !== null && !isNaN(s) && e !== null && !isNaN(e) && e > 0) {
             if (seg.is_end) {
               // Guard that allow it not jumb to next ep (0.5 < gaps(new_e;pos) < 1.0)
@@ -1868,16 +1861,22 @@
               const e_floor = Math.floor(e);
               e = Math.round(e) > e ? e_floor : e_floor - 0.6;
             }
-            if ( pos >= e || pos < s) {
-	      const v = getVideo();
-              if (v && !v.paused) {
-                v.currentTime = s;
-              }
+          if ( pos >= e || pos < s) {
+	        const v = getVideo();
+            if (v && !v.paused) {
+              v.currentTime = s;
             }
           }
         }
-        return;
-      }
+    }, 250);
+
+    let _skipLast = 0;
+    (function skipLoop(ts) {
+      requestAnimationFrame(skipLoop);
+      if (ts - _skipLast < 250) return;
+      _skipLast = ts;
+      if (Date.now() - lastSkip < SKIP_COOL) return;
+      if (editIndex !== null) return;
       const pos = liveGetPos();
       if (pos === null || pos === 0 ) {
         if (autoplay && editIndex === null || is_prevEdit) {
