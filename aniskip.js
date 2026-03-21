@@ -598,13 +598,14 @@
       rateDisplay.textContent = "x" + (v % 1 === 0 ? v : v);
     };
 
-    const rateDisplay = document.createElement("span");
+    const rateDisplay = document.createElement("button");
     rateDisplay.textContent = "x" + (_savedSpeed % 1 === 0 ? _savedSpeed : _savedSpeed);
     css(rateDisplay, {
       background: "#16213e", color: "#00b4d8", border: "1px solid #2a2a4a",
       borderRadius: "4px", height: "30px", padding: "0 8px", fontWeight: "bold",
       fontSize: "13px", display: "flex", alignItems: "center", justifyContent: "center",
-      flex: "1", whiteSpace: "nowrap", cursor: "pointer",
+      flex: "1", whiteSpace: "nowrap", cursor: "pointer", marginBottom : "0", textAlign: "center",
+      display: "flex", alignItems: "center", justifyContent: "center", lineHeight: "1",
     });
     rateDisplay.title = "Click to reset speed to x1";
     rateDisplay.onclick = () => setSpeed(1);
@@ -612,7 +613,7 @@
     const rateInput = document.createElement("input");
     rateInput.type = "number"; rateInput.step = "0.05"; rateInput.min = "0.1"; rateInput.max = "16";
     rateInput.value = "1";
-    css(rateInput, { ...S.input, flex: "1", textAlign: "center", padding: "4px", height: "30px", outline: "none", marginBottom: "0", display: "none" });
+    css(rateInput, { ...S.input, flex: "1", textAlign: "center", alignItems: "center",justifyContent: "center",padding: "4px", height: "30px", outline: "none", marginBottom: "0", display: "none" });
     rateInput.style.MozAppearance = "textfield";
 
     const editRateBtn = document.createElement("button");
@@ -640,14 +641,19 @@
         commitRate();
       }
     };
-    rateInput.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); commitRate(); } if (e.key === "Escape") { rateInput.style.display = "none"; rateDisplay.style.display = ""; editRateBtn.textContent = "E"; _rateEditing = false; } });
-    rateInput.addEventListener("blur", () => { if (_rateEditing) commitRate(); });
+    let _commitPending = false;
+    rateInput.addEventListener("keydown", e => {
+      if (e.key === "Enter") { e.preventDefault(); _commitPending = true; commitRate(); }
+      if (e.key === "Escape") { _rateEditing = false; rateInput.style.display = "none"; rateDisplay.style.display = ""; editRateBtn.textContent = "E"; }
+    });
+    rateInput.addEventListener("blur", () => { if (_rateEditing && !_commitPending) commitRate(); _commitPending = false; });
 
     const mkSpeedBtn = (label, val) => {
       const btn = document.createElement("button");
       btn.textContent = label;
       css(btn, { ...S.btn, padding: "0 8px", minWidth: "44px" });
-      btn.onclick = () => { setSpeed(val); if (_rateEditing) { rateInput.style.display = "none"; rateDisplay.style.display = ""; editRateBtn.textContent = "E"; _rateEditing = false; } };
+      btn.addEventListener("mousedown", e => { if (_rateEditing) e.preventDefault(); });
+      btn.onclick = () => { _rateEditing = false; rateInput.style.display = "none"; rateDisplay.style.display = ""; editRateBtn.textContent = "E"; setSpeed(val);};
       return btn;
     };
 
